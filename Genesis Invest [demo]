@@ -1,0 +1,338 @@
+# genesis_invest_intel.py
+# Money Atlas x Skynet – Genesis Mind for Full-Stack Investment Analysis
+# Scope: Equities / RE (proxy via REITs or custom cashflows) / FX / Rates / Crypto (via CSV)
+# Outputs: Deep numeric stats, risk, valuation snapshot, timing & gap analysis,
+#          and LLM-driven Genesis (core), Compound (multi-angle), Cosmic (macro horizon) narratives.
+from __future__ import annotations
+import os, json, math, re, uuid, warnings
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+from scipy.stats import skew, kurtosis
+from dotenv import load_dotenv
+
+warnings.filterwarnings("ignore")
+
+# ============ LLM Providers (pluggable) ============
+load_dotenv()
+_USE_OPENAI = False
+_USE_GEMINI = False
+try:
+    from openai import OpenAI
+    if os.getenv("OPENAI_API_KEY"):
+        _OPENAI = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        _USE_OPENAI = True
+except Exception:
+    pass
+
+try:
+    import google.generativeai as genai
+    if os.getenv("GEMINI_API_KEY"):
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        _USE_GEMINI = True
+except Exception:
+    pass
+
+DEFAULT_OAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEFAULT_GEM_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+DEFAULT_TEMP = float(os.getenv("GENESIS_TEMP", "0.35"))
+
+class LLM:
+    def __init__(self, oai_model=DEFAULT_OAI_MODEL, gem_model=DEFAULT_GEM_MODEL, temperature=DEFAULT_TEMP):
+        if not (_USE_OPENAI or _USE_GEMINI):
+            raise RuntimeError("Configure OPENAI_API_KEY or GEMINI_API_KEY")
+        self.oai_model, self.gem_model, self.temperature = oai_model, gem_model, temperature
+
+    def chat(self, system: str, user: str, temperature: Optional[float]=None) -> str:
+        t = self.temperature if temperature is None else temperature
+        if _USE_OPENAI:
+            r = _OPENAI.chat.completions.create(
+                model=self.oai_model, temperature=t,
+                messages=[{"role":"system","content":system},{"role":"user","content":user}]
+            )
+            return r.choices[0].message.content.strip()
+        if _USE_GEMINI:
+            model = genai.GenerativeModel(model_name=self.gem_model, system_instruction=system)
+            r = model.generate_content(user)
+            return (r.text or "").strip()
+        return "LLM unavailable."
+
+# ============ Data Utilities ============
+def load_prices_csv(path: str) -> pd.DataFrame:
+    """CSV with columns: date, close[, open, high, low, volume]"""
+    df = pd.read_csv(path)
+    df.columns = [c.lower() for c in df.columns]
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").set_index("date")
+    return df
+
+def resample_returns(df: pd.DataFrame, price_col="close", freq="D") -> pd.Series:
+    px = df[price_col].asfreq(freq, method="pad")
+    ret = px.pct_change().dropna()
+    return ret
+
+# ============ Quant Metrics ============
+@dataclass
+class Stats:
+    cagr: float
+    vol: float
+    sharpe: float
+    sortino: float
+    max_dd: float
+    skewness: float
+    kurt: float
+    hit_ratio: float
+    avg_gain: float
+    avg_loss: float
+    win_loss_ratio: float
+
+def performance_stats(prices: pd.Series, rf: float=0.0, periods_per_year=252) -> Stats:
+    ret = prices.pct_change().dropna()
+    if len(ret)==0: raise ValueError("Not enough data")
+    mu = ret.mean()*periods_per_year
+    vol = ret.std()*np.sqrt(periods_per_year)
+    neg = ret[ret<0]
+    downside = neg.std()*np.sqrt(periods_per_year) if len(neg)>0 else np.nan
+    cagr = (prices.iloc[-1]/prices.iloc[0])**(periods_per_year/len(ret)) - 1
+    sharpe = (mu-rf)/vol if vol>0 else np.nan
+    sortino = (mu-rf)/downside if downside and not np.isnan(downside) and downside>0 else np.nan
+    curve = (1+ret).cumprod()
+    peak = curve.cummax()
+    dd = (curve/peak - 1).min()
+    wins = (ret>0).mean()
+    avg_gain = ret[ret>0].mean() if (ret>0).any() else 0
+    avg_loss = ret[ret<0].mean() if (ret<0).any() else 0
+    wl = abs(avg_gain/avg_loss) if avg_loss!=0 else np.inf
+    return Stats(
+        cagr=cagr, vol=vol, sharpe=sharpe, sortino=sortino,
+        max_dd=dd, skewness=skew(ret), kurt=kurtosis(ret, fisher=True),
+        hit_ratio=wins, avg_gain=avg_gain, avg_loss=avg_loss, win_loss_ratio=wl
+    )
+
+# ============ Timing & Gaps ============
+@dataclass
+class TimingSignals:
+    sma_fast: float
+    sma_slow: float
+    sma_signal: str
+    rsi: float
+    atr: float
+    gap_events: List[Dict]
+
+def SMA(series: pd.Series, n:int) -> pd.Series: return series.rolling(n).mean()
+def RSI(series: pd.Series, n:int=14) -> pd.Series:
+    delta = series.diff()
+    up = delta.clip(lower=0).rolling(n).mean()
+    down = -delta.clip(upper=0).rolling(n).mean()
+    rs = up/(down.replace(0,np.nan))
+    return 100 - (100/(1+rs))
+
+def ATR(df: pd.DataFrame, n:int=14) -> pd.Series:
+    high, low, close = df["high"], df["low"], df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low).abs(),
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs()], axis=1).max(axis=1)
+    return tr.rolling(n).mean()
+
+def detect_gaps(df: pd.DataFrame, threshold_std: float=1.5) -> List[Dict]:
+    """Detect significant price gaps (open vs prior close)."""
+    if "open" not in df.columns or "close" not in df.columns:
+        return []
+    gap = (df["open"]/df["close"].shift(1)-1).dropna()
+    th = gap.std()*threshold_std
+    events=[]
+    for ts, g in gap.items():
+        if abs(g) >= abs(th):
+            events.append({"date": str(ts.date()), "gap_pct": float(g)})
+    return events
+
+def build_timing(df: pd.DataFrame) -> TimingSignals:
+    px = df["close"]
+    sma_fast = SMA(px, 20).iloc[-1]
+    sma_slow = SMA(px, 50).iloc[-1]
+    sma_sig = "BULL" if sma_fast> sma_slow else ("BEAR" if sma_fast< sma_slow else "NEUTRAL")
+    rsi = RSI(px).iloc[-1]
+    atr = ATR(df).iloc[-1] if all(k in df.columns for k in ["high","low","close"]) else np.nan
+    gaps = detect_gaps(df)
+    return TimingSignals(sma_fast=float(sma_fast), sma_slow=float(sma_slow),
+                         sma_signal=sma_sig, rsi=float(rsi), atr=float(atr), gap_events=gaps)
+
+# ============ Valuation & Fundamentals ============
+@dataclass
+class ValuationSnapshot:
+    market_cap: Optional[float]=None
+    pe: Optional[float]=None
+    ps: Optional[float]=None
+    pb: Optional[float]=None
+    ev_ebitda: Optional[float]=None
+    div_yield: Optional[float]=None
+    roic: Optional[float]=None
+    revenue_yoy: Optional[float]=None
+    eps_yoy: Optional[float]=None
+    notes: Optional[str]=None
+
+def load_fundamentals(obj: Dict|str) -> ValuationSnapshot:
+    """obj = dict หรือ path ไปยังไฟล์ .json ที่สรุปตัวเลขพื้นฐาน"""
+    data = obj
+    if isinstance(obj,str):
+        with open(obj,"r",encoding="utf-8") as f:
+            data = json.load(f)
+    return ValuationSnapshot(**{k:data.get(k) for k in ValuationSnapshot.__dataclass_fields__.keys()})
+
+# ============ Risk & Position ============
+@dataclass
+class RiskReport:
+    max_dd: float
+    var_95: float
+    es_95: float
+    kelly_fraction: float
+    suggested_pos: float
+
+def risk_from_returns(ret: pd.Series, bankroll: float=1.0, risk_cap: float=0.2) -> RiskReport:
+    r = ret.dropna()
+    if len(r)==0: raise ValueError("No returns")
+    # parametric VaR/ES (normal approx)
+    mu, sigma = r.mean(), r.std()
+    var_95 = mu + sigma * np.quantile(np.random.normal(size=100000), 0.05)
+    es_95 = r[r <= np.quantile(r, 0.05)].mean() if len(r)>30 else mu - 2*sigma
+    # Kelly (approx)
+    p = (r>0).mean()
+    b = abs(r[r>0].mean()/r[r<0].mean()) if (r<0).any() else 1.0
+    kelly = (p - (1-p)/b) if b!=0 else 0.0
+    kelly = float(max(0.0, min(risk_cap, kelly)))  # cap
+    # suggest position size vs bankroll
+    suggested = bankroll * kelly
+    # max drawdown (recompute)
+    curve = (1+r).cumprod()
+    peak = curve.cummax()
+    mdd = float((curve/peak - 1).min())
+    return RiskReport(max_dd=mdd, var_95=float(var_95), es_95=float(es_95),
+                      kelly_fraction=kelly, suggested_pos=float(suggested))
+
+# ============ Genesis / Compound / Cosmic ============
+MONEY_ATLAS_TONE = (
+ "You are Money Atlas – strategic, cinematic, minimalist. Structure your output as:\n"
+ "Hook → Frame → Analysis → Moves → One-line Close."
+)
+
+def compound_angles(llm: LLM, ticker: str, sector: str, theme: str) -> List[str]:
+    sys = MONEY_ATLAS_TONE + "\nGenerate DISTINCT investment lenses (fundamental/quant/macro/behavioral/alt-data)."
+    usr = f"Asset: {ticker} | Sector: {sector} | Theme: {theme}\nNeed 5 numbered perspectives."
+    txt = llm.chat(sys, usr, temperature=0.35)
+    lines = [l.strip("-• ").strip() for l in txt.split("\n") if l.strip()]
+    return lines[:5] if lines else [txt]
+
+def genesis_brief(llm: LLM, ticker: str, stats: Stats, val: ValuationSnapshot,
+                  timing: TimingSignals, risk: RiskReport, extras: Dict) -> str:
+    sys = MONEY_ATLAS_TONE + "\nCreate an integrated investment brief with numbers woven into narrative."
+    payload = {
+        "ticker": ticker,
+        "stats": dataclass_to_dict(stats),
+        "valuation": dataclass_to_dict(val),
+        "timing": dataclass_to_dict(timing),
+        "risk": dataclass_to_dict(risk),
+        "extras": extras
+    }
+    usr = json.dumps(payload, ensure_ascii=False, indent=2)
+    return llm.chat(sys, usr, temperature=0.30)
+
+def cosmic_view(llm: LLM, ticker: str, sector: str, theme: str) -> str:
+    sys = ("You are the Cosmic Mind. Project 3–10 year scenarios, invariants, regime shifts, "
+           "capital cycle, policy/technology vectors. Provide no-regret moves & triggers.")
+    usr = f"Asset: {ticker} | Sector: {sector} | Theme: {theme}"
+    return llm.chat(sys, usr, temperature=0.25)
+
+def dataclass_to_dict(x) -> Dict:
+    if x is None: return {}
+    if hasattr(x, "__dataclass_fields__"):
+        return {k:getattr(x,k) for k in x.__dataclass_fields__.keys()}
+    return {}
+
+# ============ Full Pipeline ============
+@dataclass
+class FullReport:
+    archive_id: str
+    stats: Stats
+    timing: TimingSignals
+    valuation: ValuationSnapshot
+    risk: RiskReport
+    compound_perspectives: List[str]
+    genesis_brief: str
+    cosmic_brief: str
+
+def run_full_analysis(
+    ticker: str,
+    price_csv_path: str,
+    fundamentals: Dict|str=None,
+    sector: str="",
+    theme: str="",
+    price_col: str="close",
+    rf_annual: float=0.02,
+    periods_per_year: int=252,
+    bankroll: float=1.0
+) -> FullReport:
+    llm = LLM()
+    df = load_prices_csv(price_csv_path)
+    px = df[price_col]
+    stats = performance_stats(px, rf=rf_annual, periods_per_year=periods_per_year)
+    timing = build_timing(df)
+    val = load_fundamentals(fundamentals) if fundamentals is not None else ValuationSnapshot(notes="(no fundamentals provided)")
+    ret = px.pct_change().dropna()
+    risk = risk_from_returns(ret, bankroll=bankroll, risk_cap=0.2)
+
+    perspectives = compound_angles(llm, ticker, sector, theme)
+    extras = {
+        "sector": sector, "theme": theme,
+        "gap_events": timing.gap_events
+    }
+    gen = genesis_brief(llm, ticker, stats, val, timing, risk, extras)
+    cos = cosmic_view(llm, ticker, sector, theme)
+    return FullReport(
+        archive_id=str(uuid.uuid4()),
+        stats=stats, timing=timing, valuation=val, risk=risk,
+        compound_perspectives=perspectives,
+        genesis_brief=gen, cosmic_brief=cos
+    )
+
+# ============ Pretty Print ============
+def format_stats(s: Stats) -> str:
+    pct = lambda x: f"{x*100:,.2f}%"
+    return (
+        f"CAGR: {pct(s.cagr)} | Vol: {pct(s.vol)} | Sharpe: {s.sharpe:,.2f} | Sortino: {s.sortino if s.sortino==s.sortino else float('nan'):.2f}\n"
+        f"MaxDD: {pct(s.max_dd)} | Skew: {s.skewness:,.2f} | Kurt: {s.kurt:,.2f}\n"
+        f"Hit Ratio: {s.hit_ratio*100:,.1f}% | AvgGain: {s.avg_gain*100:,.2f}% | AvgLoss: {s.avg_loss*100:,.2f}% | W/L: {s.win_loss_ratio:,.2f}"
+    )
+
+def quick_demo():
+    # ตัวอย่าง: ให้คุณเตรียม CSV เอง: prices_SAMPLE.csv (date,close,high,low,volume)
+    path = "prices_SAMPLE.csv"
+    if not os.path.exists(path):
+        print("Put a CSV at prices_SAMPLE.csv with columns: date,close,high,low,volume")
+        return
+    rpt = run_full_analysis(
+        ticker="SAMPLE", price_csv_path=path,
+        fundamentals={"pe":18.5,"ps":4.2,"pb":3.1,"roic":0.12,"revenue_yoy":0.18,"eps_yoy":0.22},
+        sector="Tech", theme="Memory = Digital Real Estate"
+    )
+    print("\n=== NUMERIC STATS ===")
+    print(format_stats(rpt.stats))
+    print("\n=== TIMING (SMA/RSI/ATR/GAPS) ===")
+    print(json.dumps(dataclass_to_dict(rpt.timing), indent=2))
+    print("\n=== VALUATION SNAPSHOT ===")
+    print(json.dumps(dataclass_to_dict(rpt.valuation), indent=2))
+    print("\n=== RISK REPORT ===")
+    print(json.dumps(dataclass_to_dict(rpt.risk), indent=2))
+    print("\n=== COMPOUND PERSPECTIVES ===")
+    for i,p in enumerate(rpt.compound_perspectives,1):
+        print(f"{i}. {p}")
+    print("\n=== GENESIS BRIEF ===\n", rpt.genesis_brief)
+    print("\n=== COSMIC BRIEF ===\n", rpt.cosmic_brief)
+    print("\n[archive_id]", rpt.archive_id)
+
+if __name__ == "__main__":
+    # quick_demo()  # uncomment เมื่อมีไฟล์ CSV พร้อม
+    pass
