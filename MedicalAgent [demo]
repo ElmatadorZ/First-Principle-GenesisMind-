@@ -1,0 +1,251 @@
+""" Medical Assistant Agent – Genesis Mind / Compound Safety Kernel
+Purpose • Provide a research-grade, safety-first Python framework for a medical assistant agent • Designed as decision support for clinicians and an educational companion for patients • NOT a substitute for professional medical advice, diagnosis, or treatment
+Key Concepts
+SafetyPolicies: guardrails, red flags, scope limits, mandatory disclaimers
+EvidenceStore: minimal built-in evidence samples + pluggable retrieval (RAG) with citation requirements
+EchoLayer: self-review of outputs for overclaiming/uncertainty, ensures citations
+LLMBridge: provider-agnostic (replace mock with OpenAI/Azure/local models)
+TriageEngine: heuristic red-flag detection and urgency routing
+PICOExtractor: simple PICO (Patient/Intervention/Comparator/Outcome) parsing for research queries
+MedAgent: orchestrator for patient-safe guidance, clinician support notes, literature Q&A
+Outputs: structured JSON in a GuidanceResponse-like schema (FHIR-inspired)
+DISCLAIMER This code is for research and software development only. It does not provide medical advice and must be used under the supervision of qualified healthcare professionals. In emergencies call local emergency services immediately. """ from future import annotations
+import dataclasses import json import math import re import statistics as stats import textwrap from dataclasses import dataclass, field from datetime import datetime from typing import Any, Dict, List, Optional, Tuple, Callable
+=============================================================
+--- Safety Kernel ---
+=============================================================
+@dataclass class SafetyPolicies: emergency_prompt: str = ( "If you have severe symptoms (e.g., chest pain, trouble breathing, signs of stroke," " heavy bleeding, severe allergic reaction), call emergency services now." ) disclaimer_patient: str = ( "I am not a substitute for a clinician. This information is educational and must be" " reviewed by a qualified professional before any medical decision." ) disclaimer_clinician: str = ( "Draft clinical considerations only. Not diagnostic. Validate against current guidelines" " and patient-specific context." ) blocked_actions: List[str] = field(default_factory=lambda: [ "prescribe_medication", "dose_calculation", "diagnose_final", "order_tests", ]) red_flags: List[str] = field(default_factory=lambda: [ # Acute/emergency keywords (not exhaustive) "chest pain", "pressure in chest", "shortness of breath", "trouble breathing", "severe headache", "worst headache", "confusion", "fainting", "loss of consciousness", "one-sided weakness", "slurred speech", "stroke", "vision loss", "heavy bleeding", "uncontrolled bleeding", "severe abdominal pain", "anaphylaxis", "hives with breathing difficulty", "swelling of tongue", "suicidal", "suicide", "homicidal", "overdose", ])
+=============================================================
+--- Evidence Store (toy built-in + pluggable RAG hook) ---
+=============================================================
+@dataclass class Evidence: id: str title: str year: int source: str # e.g., WHO, CDC, NICE, RCT journal url: Optional[str] summary: str tags: List[str]
+@dataclass class EvidenceStore: documents: List[Evidence] = field(default_factory=list) min_citations: int = 2
+def __post_init__(self):
+    if not self.documents:
+        # Minimal seed corpus (illustrative only; replace with curated data)
+        self.documents = [
+            Evidence(
+                id="cdc_covid_2022",
+                title="COVID-19: Clinical Considerations",
+                year=2022,
+                source="CDC",
+                url="https://www.cdc.gov/",
+                summary="Clinical risk factors, isolation guidance, and treatment considerations.",
+                tags=["covid", "respiratory", "infection", "public-health"],
+            ),
+            Evidence(
+                id="who_htn_2023",
+                title="WHO Guideline for Hypertension Management",
+                year=2023,
+                source="WHO",
+                url="https://www.who.int/",
+                summary="Diagnosis thresholds, lifestyle, and pharmacologic strategies for HTN.",
+                tags=["hypertension", "cardiology", "bp", "lifestyle"],
+            ),
+            Evidence(
+                id="nice_t2d_2021",
+                title="NICE Guideline: Type 2 Diabetes in Adults",
+                year=2021,
+                source="NICE",
+                url="https://www.nice.org.uk/",
+                summary="Glycemic targets, metformin first-line, risk-based individualization.",
+                tags=["diabetes", "endocrine", "t2d", "glycemic"],
+            ),
+            Evidence(
+                id="nejm_rct_2020",
+                title="Randomized Trial on Antihypertensive Strategy",
+                year=2020,
+                source="NEJM",
+                url=None,
+                summary="Compared two BP-lowering regimens; similar outcomes with different side-effect profiles.",
+                tags=["hypertension", "rct", "cardiology"],
+            ),
+        ]
+
+def search(self, query: str, limit: int = 5) -> List[Evidence]:
+    q = query.lower()
+    scored: List[Tuple[float, Evidence]] = []
+    for doc in self.documents:
+        text = f"{doc.title} {doc.summary} {' '.join(doc.tags)} {doc.source}".lower()
+        score = sum(1.0 for tok in re.findall(r"\w+", q) if tok in text)
+        if score > 0:
+            scored.append((score, doc))
+    scored.sort(key=lambda x: (-x[0], x[1].year))
+    return [d for _, d in scored][:limit]
+
+=============================================================
+--- LLM Bridge + Echo Layer ---
+=============================================================
+class LLMBridge: """Replace _mock with your provider call (OpenAI/Azure/local).""" def init(self, generator: Optional[Callable[[str], str]] = None): self._gen = generator or self._mock
+def generate(self, prompt: str) -> str:
+    return self._gen(prompt)
+
+def _mock(self, prompt: str) -> str:
+    # Minimal summarizer-style mock
+    head = " ".join(prompt.split()[:60])
+    return f"[MockLLM]\nKey: {head[:300]}...\nResponse: Provide structured and cautious guidance with citations."
+
+@dataclass class EchoReport: warnings: List[str] score: float
+@dataclass class EchoLayer: min_score: float = 0.80
+def review(self, text: str) -> EchoReport:
+    warnings: List[str] = []
+    if re.search(r"\b(guarantee|never|always|risk-free)\b", text, re.I):
+        warnings.append("Absolute language detected.")
+    if "[" not in text and "]" not in text and "source:" not in text.lower():
+        warnings.append("No citation markers detected.")
+    score = max(0.0, 1.0 - 0.2 * len(warnings))
+    return EchoReport(warnings, score)
+
+=============================================================
+--- Utilities: PICO & Triage ---
+=============================================================
+@dataclass class PICO: patient: Optional[str] intervention: Optional[str] comparator: Optional[str] outcome: Optional[str]
+class PICOExtractor: @staticmethod def extract(text: str) -> PICO: t = text.lower() # Very naive heuristics p = re.search(r"patient(?:\s*[:=-]\s*|\s)([^;\n]+)", t) i = re.search(r"(intervention|treatment)(?:\s*[:=-]\s*|\s)([^;\n]+)", t) c = re.search(r"comparator(?:\s*[:=-]\s*|\s)([^;\n]+)", t) o = re.search(r"outcome(?:\s*[:=-]\s*|\s)([^;\n]+)", t) return PICO( patient=p.group(1).strip() if p else None, intervention=i.group(2).strip() if i else None, comparator=c.group(1).strip() if c else None, outcome=o.group(1).strip() if o else None, )
+class TriageEngine: def init(self, safety: SafetyPolicies): self.safety = safety
+def assess(self, text: str) -> Tuple[str, List[str]]:
+    low = text.lower()
+    hits = [kw for kw in self.safety.red_flags if kw in low]
+    if hits:
+        return "emergency", hits
+    # Could add additional logic for urgent vs routine
+    return "routine", []
+
+=============================================================
+--- Med Agent Orchestrator ---
+=============================================================
+@dataclass class GuidanceResponse: resourceType: str created: str triage: str red_flags: List[str] patient_message: str clinician_notes: str citations: List[Dict[str, Any]] disclaimers: Dict[str, str] audit: Dict[str, Any]
+class MedAgent: def init(self, llm: LLMBridge, safety: SafetyPolicies, echo: EchoLayer, evidence: EvidenceStore): self.llm = llm self.safety = safety self.echo = echo self.evidence = evidence self.triage_engine = TriageEngine(safety)
+# --- Core pipelines ---
+def _retrieve_citations(self, query: str, extra_tags: Optional[List[str]] = None) -> List[Evidence]:
+    results = self.evidence.search(query, limit=5)
+    if extra_tags:
+        # simple boost if tag matches
+        boosted = [d for d in results if any(tag in d.tags for tag in extra_tags)] + \
+                  [d for d in results if not any(tag in d.tags for tag in extra_tags)]
+        results = boosted
+    return results[: max(self.evidence.min_citations, 1)]
+
+def _format_citations(self, docs: List[Evidence]) -> List[Dict[str, Any]]:
+    out = []
+    for d in docs:
+        out.append({
+            "id": d.id,
+            "title": d.title,
+            "year": d.year,
+            "source": d.source,
+            "url": d.url,
+        })
+    return out
+
+def _compose_patient_message(self, intent: str, triage: str, notes: str, citations: List[Evidence]) -> str:
+    cites = "; ".join(f"{c.source}: {c.title} ({c.year})" for c in citations)
+    base = [
+        f"Intent: {intent}",
+        f"Triage: {triage.upper()}" + (" — " + self.safety.emergency_prompt if triage == "emergency" else ""),
+        "What this means:",
+        notes,
+        f"Sources: {cites if cites else '—'}",
+        f"Note: {self.safety.disclaimer_patient}",
+    ]
+    return "\n".join(base)
+
+def _compose_clinician_notes(self, query: str, pico: PICO, citations: List[Evidence]) -> str:
+    cite_lines = [f"[{i+1}] {c.source}: {c.title} ({c.year})" for i, c in enumerate(citations)]
+    pico_block = json.dumps(dataclasses.asdict(pico), ensure_ascii=False)
+    prompt = textwrap.dedent(f"""
+    Create clinician-oriented considerations (NOT diagnostic) for the following query.
+    Include red-flag differentials to rule-out, initial labs/imaging to consider (no dosing),
+    and patient education points. Use cautious, conditional language.
+    Query: {query}
+    PICO: {pico_block}
+    Citations should be referenced by bracketed indices [1]..[n] drawn from the provided list.
+    Citations:\n{chr(10).join(cite_lines)}
+    """)
+    draft = self.llm.generate(prompt)
+    # Echo review
+    rep = self.echo.review(draft)
+    if rep.score < self.echo.min_score:
+        draft = self.llm.generate(
+            f"Refine for caution and explicit citations. Warnings: {rep.warnings}.\n---\n{draft}"
+        )
+    return draft
+
+# --- Public API ---
+def patient_safe_guidance(self, message: str) -> GuidanceResponse:
+    triage, hits = self.triage_engine.assess(message)
+    pico = PICOExtractor.extract(message)
+    docs = self._retrieve_citations(message)
+    clinician_notes = self._compose_clinician_notes(message, pico, docs)
+    patient_msg = self._compose_patient_message("general-guidance", triage, "We will outline general steps and when to seek care.", docs)
+    return GuidanceResponse(
+        resourceType="GuidanceResponse",
+        created=datetime.utcnow().isoformat(),
+        triage=triage,
+        red_flags=hits,
+        patient_message=patient_msg,
+        clinician_notes=clinician_notes,
+        citations=self._format_citations(docs),
+        disclaimers={
+            "patient": self.safety.disclaimer_patient,
+            "clinician": self.safety.disclaimer_clinician,
+        },
+        audit={
+            "echo_min_score": self.echo.min_score,
+            "actions_blocked": self.safety.blocked_actions,
+        },
+    )
+
+def literature_qa(self, question: str) -> GuidanceResponse:
+    pico = PICOExtractor.extract(question)
+    docs = self._retrieve_citations(question)
+    cite_lines = [f"[{i+1}] {c.source}: {c.title} ({c.year})" for i, c in enumerate(docs)]
+    prompt = textwrap.dedent(f"""
+    Answer the research question cautiously and cite explicitly using [1]..[n].
+    Highlight strength of evidence (guideline vs RCT vs observational). Avoid clinical dosing.
+    Question: {question}
+    PICO: {json.dumps(dataclasses.asdict(pico), ensure_ascii=False)}
+    Citations:\n{chr(10).join(cite_lines)}
+    """)
+    draft = self.llm.generate(prompt)
+    rep = self.echo.review(draft)
+    if rep.score < self.echo.min_score:
+        draft = self.llm.generate(
+            f"Refine for caution and explicit citations. Warnings: {rep.warnings}.\n---\n{draft}"
+        )
+    triage, hits = self.triage_engine.assess(question)
+    patient_msg = self._compose_patient_message("literature-qa", triage, "Summary of evidence with when-to-seek-care cues.", docs)
+    return GuidanceResponse(
+        resourceType="GuidanceResponse",
+        created=datetime.utcnow().isoformat(),
+        triage=triage,
+        red_flags=hits,
+        patient_message=patient_msg,
+        clinician_notes=draft,
+        citations=self._format_citations(docs),
+        disclaimers={
+            "patient": self.safety.disclaimer_patient,
+            "clinician": self.safety.disclaimer_clinician,
+        },
+        audit={"echo_min_score": self.echo.min_score},
+    )
+
+=============================================================
+--- Example usage ---
+=============================================================
+if name == "main": safety = SafetyPolicies() evidence = EvidenceStore() echo = EchoLayer(min_score=0.85) llm = LLMBridge() # Replace with real provider
+agent = MedAgent(llm=llm, safety=safety, echo=echo, evidence=evidence)
+
+# Example 1: patient-safe guidance
+msg = (
+    "Patient: 58-year-old with high blood pressure and new chest pain radiating to left arm,"
+    " shortness of breath. Outcome: what to do now?"
+)
+res = agent.patient_safe_guidance(msg)
+print("PATIENT SAFE GUIDANCE:\n", json.dumps(dataclasses.asdict(res), ensure_ascii=False, indent=2))
+
+# Example 2: literature Q&A
+q = "Patient: adult with stage 1 hypertension. Intervention: lifestyle vs early medication. Outcome: CV risk."
+res2 = agent.literature_qa(q)
+print("\nLITERATURE QA:\n", json.dumps(dataclasses.asdict(res2), ensure_ascii=False, indent=2))
+
+
