@@ -1,0 +1,233 @@
+# ================================================================
+# Genesis Mind — All-in-One Orchestrator
+# Author: Boonyawath Dechanon (ElmatadorZ) x Skynet
+# Purpose: Full cognitive stack (Core + Compound + Cosmic + Shadow + Narrative + Audit)
+# ================================================================
+
+from __future__ import annotations
+import os, re, time, json, hmac, uuid, base64, hashlib, random, datetime
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Any, Optional
+
+# ================================================================
+# 0. LLM BRIDGE (pluggable)
+# ================================================================
+class LLMBridge:
+    """Swap with OpenAI/Gemini/Local. Mock fallback is deterministic."""
+    def __init__(self, provider="mock", model="gpt-4o-mini", temperature=0.3):
+        self.provider, self.model, self.temperature = provider, model, temperature
+
+    def generate(self, system: str, user: str, temperature: Optional[float]=None) -> str:
+        t = self.temperature if temperature is None else temperature
+        if self.provider == "mock":
+            seed = int(hashlib.sha256((system+user).encode()).hexdigest(), 16) % (10**8)
+            random.seed(seed)
+            return random.choice([
+                "Hook: Hidden patterns surface.\nFrame: Structure over noise.\nAnalysis: Probabilities compound.\nMoves: 1) Entry 2) Add 3) Exit.\nClose: Play the slope.",
+                "Hook: The signal hides in the quiet.\nFrame: Cross-lens synthesis.\nAnalysis: Relative strength + flows.\nMoves: Hedge + Barbell.\nClose: Patience > prediction."
+            ])
+        # TODO: plug real API calls here (OpenAI/Gemini)
+        return "[LLM output unavailable]"
+
+# ================================================================
+# 1. MEMORY SYSTEM
+# ================================================================
+@dataclass
+class MemoryItem:
+    kind: str
+    content: str
+    tags: List[str] = field(default_factory=list)
+    ts: float = field(default_factory=lambda: time.time())
+
+class EchoMemory:
+    def __init__(self):
+        self.episodic: List[str] = []
+        self.semantic: Dict[str, Any] = {}
+        self.persona: Dict[str, Any] = {
+            "name": "Money Atlas",
+            "tone": "cinematic, confident, minimalist, strategic"
+        }
+
+    def store(self, context: str):
+        self.episodic.append(f"{datetime.datetime.now()}: {context}")
+
+    def learn(self, key: str, value: Any):
+        self.semantic[key] = value
+
+    def recall(self, key: str):
+        return self.semantic.get(key, None)
+
+    def hint(self) -> str:
+        return json.dumps(self.persona, ensure_ascii=False)
+
+# ================================================================
+# 2. CORE LAYERS
+# ================================================================
+class SelfReflection:
+    def __init__(self, memory: EchoMemory): self.memory = memory
+    def reflect(self, text: str) -> str:
+        self.memory.store(text)
+        return f"[Reflection] Registered: {text[:80]}..."
+
+class ShadowGenesis:
+    def __init__(self, memory: EchoMemory): self.memory = memory
+    def detect(self, statement: str) -> str:
+        if "always" in statement or "never" in statement:
+            return "⚠ Absolutism detected. Reframe."
+        return "✓ No shadow conflict."
+
+# ================================================================
+# 3. TASK & RESULT STRUCTURES
+# ================================================================
+@dataclass
+class TaskSpec:
+    id: str
+    user: str
+    objective: str
+    domain: str = "general"
+    constraints: Dict[str, Any] = field(default_factory=dict)
+    user_values: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class AgentResult:
+    agent: str
+    role: str
+    content: str
+    assumptions: List[str] = field(default_factory=list)
+    numbers: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class AuditLog:
+    orchestration_id: str
+    started_at: str
+    finished_at: str
+    spec: Dict[str, Any]
+    results: List[Dict[str, Any]]
+    cosmic: str
+    final_brief: str
+    creative_pass: str
+    signature: str
+    alignment: Dict[str, Any]
+
+# ================================================================
+# 4. AGENTS (Compound Mind)
+# ================================================================
+class Agent:
+    def __init__(self, name, role, system, llm: LLMBridge):
+        self.name, self.role, self.system, self.llm = name, role, system, llm
+    def run(self, spec: TaskSpec, memory: EchoMemory) -> AgentResult:
+        prompt = f"ROLE: {self.role}\nTASK: {spec.objective}\nMEMORY: {memory.hint()}"
+        out = self.llm.generate(self.system, prompt)
+        return AgentResult(agent=self.name, role=self.role, content=out)
+
+def default_agents(llm: LLMBridge):
+    return [
+        Agent("FundamentalLens", "Business model & unit economics",
+              "You analyze fundamentals, numbers, falsifiable evidence.", llm),
+        Agent("QuantLens", "Signals & timing", "You analyze risk regimes & timing.", llm),
+        Agent("BehavioralLens", "Crowd & narratives", "You decode herding & reflexivity.", llm),
+        Agent("PolicyLens", "Regulatory", "You forecast policy & 2nd-order effects.", llm),
+        Agent("AltDataLens", "Alternative data", "You suggest creative proxies.", llm),
+        Agent("CommsLens", "Packaging", "You craft executive-grade summary.", llm),
+    ]
+
+# ================================================================
+# 5. COSMIC MIND
+# ================================================================
+class CosmicMind:
+    def __init__(self, llm: LLMBridge): self.llm = llm
+    def run(self, results: List[AgentResult], spec: TaskSpec) -> str:
+        names = [r.agent for r in results]
+        prompt = f"Objective: {spec.objective}\nAgents: {names}\nReturn 3 scenarios + no-regret moves."
+        return self.llm.generate("Cosmic Strategist", prompt, temperature=0.2)
+
+# ================================================================
+# 6. NARRATIVE LAYERS
+# ================================================================
+class MoneyAtlasSynth:
+    def __init__(self, llm: LLMBridge): self.llm = llm
+    def fuse(self, results: List[AgentResult], cosmic: str, spec: TaskSpec) -> str:
+        bundle = {"objective": spec.objective,
+                  "agents": [asdict(r) for r in results], "cosmic": cosmic}
+        return self.llm.generate("Money Atlas Synthesizer", json.dumps(bundle))
+
+class ElmatadorZMind:
+    def __init__(self, llm: LLMBridge): self.llm = llm
+    def transform(self, brief: str, spec: TaskSpec) -> str:
+        prompt = f"Brief: {brief}\nObjective: {spec.objective}\nReturn 3 strategies + prototype system + rallying cry."
+        return self.llm.generate("ElmatadorZ Creative", prompt, temperature=0.28)
+
+# ================================================================
+# 7. SAFETY & AUDIT
+# ================================================================
+class Alignment:
+    def check(self, text: str) -> List[str]:
+        issues = []
+        if "bomb" in text: issues.append("Unsafe content.")
+        for m in re.finditer(r"\b\d{4,}\b", text):
+            issues.append(f"Numeric hygiene: {m.group(0)} needs units.")
+        return issues
+
+class Signer:
+    def __init__(self, secret="demo_secret"): self.secret = secret.encode()
+    def sign(self, payload: Dict[str, Any]) -> str:
+        raw = json.dumps(payload, sort_keys=True).encode()
+        return base64.urlsafe_b64encode(hmac.new(self.secret, raw, hashlib.sha256).digest()).decode()
+
+# ================================================================
+# 8. ORCHESTRATOR
+# ================================================================
+class GenesisOrchestrator:
+    def __init__(self, llm: LLMBridge, memory: EchoMemory):
+        self.llm, self.memory = llm, memory
+        self.agents = default_agents(llm)
+        self.cosmic = CosmicMind(llm)
+        self.synth = MoneyAtlasSynth(llm)
+        self.elz = ElmatadorZMind(llm)
+        self.align = Alignment()
+        self.signer = Signer()
+
+    def run(self, spec: TaskSpec) -> AuditLog:
+        t0 = datetime.datetime.now().isoformat()
+
+        results = [a.run(spec, self.memory) for a in self.agents]
+        cosmic_txt = self.cosmic.run(results, spec)
+        brief = self.synth.fuse(results, cosmic_txt, spec)
+        creative = self.elz.transform(brief, spec)
+        issues = self.align.check(brief + creative)
+
+        t1 = datetime.datetime.now().isoformat()
+        signature = self.signer.sign({"id": spec.id, "user": spec.user, "ts": t1})
+
+        return AuditLog(
+            orchestration_id=spec.id,
+            started_at=t0, finished_at=t1,
+            spec=asdict(spec),
+            results=[asdict(r) for r in results],
+            cosmic=cosmic_txt,
+            final_brief=brief,
+            creative_pass=creative,
+            signature=signature,
+            alignment={"issues": issues}
+        )
+
+# ================================================================
+# 9. DEMO
+# ================================================================
+if __name__ == "__main__":
+    llm = LLMBridge(provider="mock")
+    memory = EchoMemory()
+    orch = GenesisOrchestrator(llm, memory)
+
+    spec = TaskSpec(
+        id=str(uuid.uuid4()),
+        user="ElmatadorZ",
+        objective="Design a path to master AI-driven investing in 6 months."
+    )
+
+    audit = orch.run(spec)
+    print("\n=== EXECUTIVE BRIEF ===\n", audit.final_brief)
+    print("\n=== CREATIVE PASS ===\n", audit.creative_pass)
+    print("\n=== COSMIC VIEW ===\n", audit.cosmic)
+    print("\n=== AUDIT SIGNATURE ===\n", audit.signature)
+    print("\n=== ALIGNMENT ===\n", audit.alignment)
