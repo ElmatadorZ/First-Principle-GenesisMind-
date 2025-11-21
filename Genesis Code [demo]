@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+GenesisMind — Open Source Minimal Core (Single File)
+Author: ElmatadorZ × Skynet (Money Atlas / Alternative Slowbar)
+License: MIT
+
+Purpose
+-------
+A small, vendor-agnostic "thinking engine" that turns any LLM
+into a multi-agent Genesis Mind:
+
+- First Principle Thinking
+- System Thinking
+- Multi-Agent Reasoning (Analyst / Strategist / Synthesizer)
+- Lightweight Memory (JSON file)
+- Simple CLI interface
+
+This file is designed to be:
+- Easy to read, fork, and extend
+- Free from hard-coded secrets
+- Safe by default (text-only, no code execution)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# ---------------------------------------------------------------------
+# 0. LLM Bridge (vendor-agnostic)
+# ---------------------------------------------------------------------
+
+class LLMBridge:
+    """
+    Thin abstraction layer over your LLM of choice.
+
+    By default, this tries to use OpenAI's Chat Completions API if
+    OPENAI_API_KEY is present. Otherwise, it falls back to a simple
+    echo/stub mode so the rest of the system can still run.
+
+    You can replace `generate()` with any other provider (local model,
+    other API, etc.) without touching the rest of GenesisMind.
+    """
+
+    def __init__(self, model: str = "gpt-4.1-mini"):
+        self.model = model
+        self._openai_available = False
+        self._client = None
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            try:
+                from openai import OpenAI  # type: ignore
+                self._client = OpenAI(api_key=api_key)
+                self._openai_available = True
+            except Exception:
+                self._openai_available = False
+
+    def generate(self, system_prompt: str, messages: List[Dict[str, str]],
+                 max_tokens: int = 800) -> str:
+        """
+        Generate a completion given system + conversation messages.
+
+        messages: [{"role": "user"|"assistant", "content": "..."}]
+        """
+        if not self._openai_available:
+            # Safe stub: returns a compact summary of the conversation.
+            joined = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            return (
+                "[STUB LLM RESPONSE]\n"
+                "OpenAI API key not configured. This is a deterministic stub.\n"
+                "You asked the GenesisMind to think about:\n"
+                f"{joined[:600]}...\n"
+                "Configure OPENAI_API_KEY to get real LLM responses.\n"
+            )
+
+        chat_messages = [{"role": "system", "content": system_prompt}] + messages
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            messages=chat_messages,
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+        return resp.choices[0].message.content or ""
+
+
+# ---------------------------------------------------------------------
+# 1. Core Data Structures
+# ---------------------------------------------------------------------
+
+@dataclass
+class MemoryItem:
+    timestamp: str
+    role: str          # "user" | "assistant" | "system" | "meta"
+    content: str
+    tags: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TaskSpec:
+    id: str
+    user_query: str
+    created_at: str
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AgentConfig:
+    name: str
+    role: str
+    style: str
+    objectives: str
+
+
+# ---------------------------------------------------------------------
+# 2. EchoMemory — tiny JSON memory for context & learning
+# ---------------------------------------------------------------------
+
+class EchoMemory:
+    """
+    Minimal JSON-based memory.
+
+    - Stores conversation + reasoning snippets
+    - Simple keyword-based retrieval (no vector DB)
+    - Designed to be easily replaced later with Chroma, pgvector, etc.
+    """
+
+    def __init__(self, path: str = "genesis_memory.json"):
+        self.path = Path(path)
+        self.items: List[MemoryItem] = []
+        self._load()
+
+    # ---- persistence -------------------------------------------------
+
+    def _load(self) -> None:
+        if self.path.is_file():
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                self.items = [MemoryItem(**x) for x in data]
+            except Exception:
+                self.items = []
+
+    def _save(self) -> None:
+        data = [asdict(it) for it in self.items]
+        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+
+    # ---- public API --------------------------------------------------
+
+    def add(self, role: str, content: str, tags: Optional[List[str]] = None) -> None:
+        item = MemoryItem(
+            timestamp=datetime.utcnow().isoformat(),
+            role=role,
+            content=content,
+            tags=tags or [],
+        )
+        self.items.append(item)
+        self._save()
+
+    def search(self, query: str, limit: int = 5) -> List[MemoryItem]:
+        """
+        Very naive keyword search over memory content.
+        Enough for an open-source minimal core.
+        """
+        q = query.lower()
+        scored: List[tuple[int, MemoryItem]] = []
+        for it in self.items:
+            text = (it.content or "").lower()
+            score = text.count(q)
+            if score > 0:
+                scored.append((score, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [it for _, it in scored[:limit]]
+
+
+# ---------------------------------------------------------------------
+# 3. Agent Definitions (Analyst / Strategist / Synthesizer)
+# ---------------------------------------------------------------------
+
+DEFAULT_AGENTS: List[AgentConfig] = [
+    AgentConfig(
+        name="FirstPrincipleAnalyst",
+        role="analyst",
+        style="Calm, precise, Socratic",
+        objectives=(
+            "Decompose the problem using first principles. "
+            "Identify assumptions, known facts, unknowns, and constraints. "
+            "Avoid solutions for now; focus on structure and truth."
+        ),
+    ),
+    AgentConfig(
+        name="SystemThinkingStrategist",
+        role="strategist",
+        style="Systems, causal loops, trade-offs",
+        objectives=(
+            "View the problem as a system. Map interacting parts, "
+            "feedback loops, time horizons, risks, and leverage points. "
+            "Propose 2–4 strategic directions, not detailed steps."
+        ),
+    ),
+    AgentConfig(
+        name="SynthesisArchitect",
+        role="synthesizer",
+        style="Teacher, storyteller, architect",
+        objectives=(
+            "Combine first-principle analysis and system view into a single, "
+            "coherent answer. Provide a clear structure, examples, and "
+            "practical steps. Be honest about uncertainty."
+        ),
+    ),
+]
+
+
+def build_system_prompt(agent: AgentConfig) -> str:
+    return f"""
+You are {agent.name}, a sub-mind within the GenesisMind framework.
+
+Your permanent traits:
+- Role: {agent.role}
+- Style: {agent.style}
+- Objectives: {agent.objectives}
+
+Global principles you MUST follow:
+- Think from first principles: question assumptions, ground in reality.
+- Use system thinking: consider interactions, feedback loops, time.
+- Be concise but deep: no fluff, no motivational clichés.
+- Be safe and ethical: do not assist with harm, crime, or deception.
+- Respect the user's agency: offer options, not commands.
+""".strip()
+
+
+# ---------------------------------------------------------------------
+# 4. GenesisMind Orchestrator
+# ---------------------------------------------------------------------
+
+class GenesisMind:
+    """
+    High-level orchestrator:
+    - Creates a TaskSpec
+    - Queries memory for relevant context
+    - Runs the three core agents
+    - Synthesizes the final answer (via the Synthesizer agent)
+    - Persists important snippets back to memory
+    """
+
+    def __init__(self,
+                 llm: Optional[LLMBridge] = None,
+                 memory: Optional[EchoMemory] = None,
+                 agents: Optional[List[AgentConfig]] = None) -> None:
+        self.llm = llm or LLMBridge()
+        self.memory = memory or EchoMemory()
+        self.agents = agents or DEFAULT_AGENTS
+
+    # ---- orchestration ----------------------------------------------
+
+    def _run_agent(self,
+                   agent: AgentConfig,
+                   task: TaskSpec,
+                   prior_notes: str,
+                   memory_context: str) -> str:
+        system_prompt = build_system_prompt(agent)
+
+        user_content = f"""
+Task ID: {task.id}
+User query:
+{task.user_query}
+
+Compressed memory context (may be empty):
+{memory_context}
+
+Previous internal notes from other agents (may be empty):
+{prior_notes}
+
+Your job as {agent.role}:
+{agent.objectives}
+
+Respond with a single, well-structured analysis.
+Do NOT repeat the instructions.
+""".strip()
+
+        messages = [{"role": "user", "content": user_content}]
+        reply = self.llm.generate(system_prompt, messages)
+        return reply.strip()
+
+    def think(self, user_query: str, use_memory: bool = True) -> Dict[str, str]:
+        """
+        Main entrypoint for programmatic use.
+
+        Returns a dict with:
+        - "analysis"
+        - "strategy"
+        - "final_answer"
+        - "debug"
+        """
+        task = TaskSpec(
+            id=f"task-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+            user_query=user_query,
+            created_at=datetime.utcnow().isoformat(),
+        )
+
+        # 1) Search memory for relevant snippets
+        memory_snippets: List[MemoryItem] = []
+        if use_memory and user_query.strip():
+            memory_snippets = self.memory.search(user_query, limit=5)
+
+        memory_text = "\n\n".join(
+            f"[{m.timestamp}] ({m.role}) {m.content}"
+            for m in memory_snippets
+        ) or "(no relevant memory found)"
+
+        # 2) Run Analyst
+        analyst_cfg = self.agents[0]
+        analyst_notes = self._run_agent(
+            analyst_cfg, task, prior_notes="", memory_context=memory_text
+        )
+        self.memory.add("assistant", f"[Analyst] {analyst_notes}",
+                        tags=["analysis", analyst_cfg.name])
+
+        # 3) Run Strategist
+        strategist_cfg = self.agents[1]
+        strategist_notes = self._run_agent(
+            strategist_cfg, task,
+            prior_notes=analyst_notes,
+            memory_context=memory_text,
+        )
+        self.memory.add("assistant", f"[Strategist] {strategist_notes}",
+                        tags=["strategy", strategist_cfg.name])
+
+        # 4) Run Synthesizer (final answer to user)
+        synthesizer_cfg = self.agents[2]
+        final_answer = self._run_agent(
+            synthesizer_cfg, task,
+            prior_notes=analyst_notes + "\n\n" + strategist_notes,
+            memory_context=memory_text,
+        )
+        self.memory.add("assistant", f"[Final] {final_answer}",
+                        tags=["final_answer", synthesizer_cfg.name])
+
+        debug_info = (
+            f"Task ID: {task.id}\n\n"
+            f"=== Memory used ===\n{memory_text}\n\n"
+            f"=== Analyst ===\n{analyst_notes}\n\n"
+            f"=== Strategist ===\n{strategist_notes}\n"
+        )
+
+        return {
+            "analysis": analyst_notes,
+            "strategy": strategist_notes,
+            "final_answer": final_answer,
+            "debug": debug_info,
+        }
+
+
+# ---------------------------------------------------------------------
+# 5. Simple CLI
+# ---------------------------------------------------------------------
+
+def run_cli() -> None:
+    """
+    Command-line interface.
+
+    Examples:
+        python genesis_mind.py "Explain first principle thinking in coffee extraction."
+        echo "Design a coffee x AI course." | python genesis_mind.py
+    """
+    if len(sys.argv) > 1:
+        query = " ".join(sys.argv[1:]).strip()
+    else:
+        # read from stdin if piped
+        data = sys.stdin.read().strip()
+        if data:
+            query = data
+        else:
+            print("Enter your question or task (Ctrl+D to submit):")
+            lines = sys.stdin.read().strip()
+            query = lines
+
+    if not query:
+        print("No input provided.")
+        sys.exit(0)
+
+    engine = GenesisMind()
+    result = engine.think(query, use_memory=True)
+
+    print("\n" + "=" * 80)
+    print(">>> GenesisMind — Final Answer\n")
+    print(result["final_answer"])
+    print("\n" + "=" * 80)
+    print(">>> Debug (optional)\n")
+    print(result["debug"])
+
+
+if __name__ == "__main__":
+    run_cli()
