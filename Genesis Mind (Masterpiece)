@@ -1,0 +1,918 @@
+#!/usr/bin/env python3
+# genesis_mind_universal.py
+# Genesis Mind — Universal Compound AI Framework 
+# Skynet × ElmatadorZ (Boonyawat Dechanon)
+#
+# Architecture:
+#   GenesisMindUniversal = Thinking (CompoundMind)
+#                         + Time (TimeMemoryLayer)
+#                         + Will (WillEngine)
+#                         + Soul (SoulEngine)
+#
+# Domains covered:
+#   - Content / Brand Writing
+#   - Finance / Investment
+#   - Marketing / Growth
+#   - Sales / Playbook
+#   - Strategy / Industry & Business
+#   - Law / Policy / Governance
+#   - Science / Research
+#   - AI & Technology
+#   - Health / Wellness (with safety disclaimers)
+
+from __future__ import annotations
+import textwrap, statistics as stats, uuid, time
+from dataclasses import dataclass, field, asdict
+from enum import Enum, auto
+from typing import Any, Dict, List, Optional
+
+# ============================================================
+# Seed Brand Profiles (Soul / Art)
+# ============================================================
+
+SEED_BRANDS: Dict[str, Dict[str, Any]] = {
+    "Alternative Slowbar": {
+        "style": {
+            "science_ratio": 0.45,
+            "story_ratio": 0.55,
+            "tone": "cinematic, minimal, quiet luxury, Thai/English blend",
+            "signature": "จังหวะเงียบ + วิทยาศาสตร์กาแฟ + ปรัชญา",
+        },
+        "guardrails": ["ไม่มีข้อมูลเท็จ", "หลีกเลี่ยงคำฟุ่มเฟือย", "คงความสงบ เรียบหรู"],
+    },
+    "Money Atlas": {
+        "style": {
+            "science_ratio": 0.60,
+            "story_ratio": 0.40,
+            "tone": "rational, structural, persuasive, market-psychology",
+            "signature": "โครงสร้างคิด + การเงินพฤติกรรม + กลยุทธ์ระยะยาว",
+        },
+        "guardrails": ["ไม่ปั่นราคา", "เปิดเผยความเสี่ยง", "ไม่ใช่คำแนะนำการลงทุน"],
+    },
+    "Neutral": {
+        "style": {
+            "science_ratio": 0.70,
+            "story_ratio": 0.30,
+            "tone": "clear, neutral, globally understandable",
+            "signature": "concise reasoning + practical steps",
+        },
+        "guardrails": ["หลีกเลี่ยงการใช้ภาษาชี้นำเกินจำเป็น"],
+    },
+}
+
+# ============================================================
+# Minimal mock time-series (offline finance demo)
+# ============================================================
+
+def mock_prices(symbol: str, n: int = 120) -> List[float]:
+    import random
+    random.seed(hash(symbol) % 10_000)
+    price = 100.0 + (hash(symbol) % 50)
+    xs: List[float] = []
+    for _ in range(n):
+        drift = 0.02 if symbol in ("BTC",) else 0.005
+        vol = 1.5 if symbol in ("BTC",) else 0.7
+        price *= (1 + random.gauss(drift / n, vol / 100))
+        xs.append(round(price, 2))
+    return xs
+
+# ============================================================
+# LLM Bridge (replace generate() with OpenAI / Gemini / etc.)
+# ============================================================
+
+class LLMBridge:
+    """Swap this with OpenAI, Azure, local LLM. API: generate(prompt, system=None) -> str"""
+
+    def __init__(self, model: str = "mock-llm", temperature: float = 0.3):
+        self.model = model
+        self.temperature = temperature
+
+    def generate(self, prompt: str, system: Optional[str] = None) -> str:
+        # Deterministic mock: echoes compressed prompt with headers.
+        header = f"[Model={self.model} | T={self.temperature}]"
+        if system:
+            header += f"\n[SYSTEM]: {self._compress(system, 200)}"
+        body = textwrap.dedent(f"""
+        {header}
+        === OUTPUT BEGIN ===
+        {self._compress(prompt)}
+        === OUTPUT END ===
+        """)
+        return body.strip()
+
+    @staticmethod
+    def _compress(s: str, max_len: int = 1200) -> str:
+        s = " ".join(s.split())
+        return s[:max_len] + ("..." if len(s) > max_len else "")
+
+# ============================================================
+# Core Data Structures
+# ============================================================
+
+class Domain(Enum):
+    CONTENT = auto()
+    FINANCE = auto()
+    MARKETING = auto()
+    SALES = auto()
+    STRATEGY = auto()
+    LAW = auto()
+    SCIENCE = auto()
+    AI_TECH = auto()
+    HEALTH = auto()
+    GENERAL = auto()
+
+@dataclass
+class TaskSpec:
+    domain: Domain
+    goal: str
+    audience: str = "general"
+    brand: str = "Neutral"
+    length: str = "medium"  # short | medium | long
+    language: str = "mixed-th-en"  # "th", "en", "mixed-th-en", etc.
+    extras: Dict[str, Any] = field(default_factory=dict)
+
+    # Presets for different domains
+    @staticmethod
+    def preset_content(goal: str,
+                       audience: str = "general",
+                       brand: str = "Neutral",
+                       length: str = "medium",
+                       language: str = "mixed-th-en",
+                       **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.CONTENT,
+            goal=goal,
+            audience=audience,
+            brand=brand,
+            length=length,
+            language=language,
+            extras=extras,
+        )
+
+    @staticmethod
+    def preset_finance(goal: str,
+                       data: Optional[Dict[str, List[float]]] = None,
+                       language: str = "mixed-th-en",
+                       **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.FINANCE,
+            goal=goal,
+            language=language,
+            extras={"data": data or {}, **extras},
+        )
+
+    @staticmethod
+    def preset_marketing(goal: str,
+                         language: str = "mixed-th-en",
+                         **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.MARKETING,
+            goal=goal,
+            language=language,
+            extras=extras,
+        )
+
+    @staticmethod
+    def preset_sales(goal: str,
+                     language: str = "mixed-th-en",
+                     **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.SALES,
+            goal=goal,
+            language=language,
+            extras=extras,
+        )
+
+    @staticmethod
+    def preset_strategy(goal: str,
+                        industry: str = "general",
+                        region: str = "global",
+                        language: str = "mixed-th-en",
+                        **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.STRATEGY,
+            goal=goal,
+            language=language,
+            extras={"industry": industry, "region": region, **extras},
+        )
+
+    @staticmethod
+    def preset_law(goal: str,
+                   jurisdiction: str = "global",
+                   language: str = "mixed-th-en",
+                   **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.LAW,
+            goal=goal,
+            language=language,
+            extras={"jurisdiction": jurisdiction, **extras},
+        )
+
+    @staticmethod
+    def preset_science(goal: str,
+                       field: str = "general science",
+                       language: str = "en",
+                       **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.SCIENCE,
+            goal=goal,
+            language=language,
+            extras={"field": field, **extras},
+        )
+
+    @staticmethod
+    def preset_ai(goal: str,
+                  subfield: str = "LLM",
+                  language: str = "en",
+                  **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.AI_TECH,
+            goal=goal,
+            language=language,
+            extras={"subfield": subfield, **extras},
+        )
+
+    @staticmethod
+    def preset_health(goal: str,
+                      audience: str = "general",
+                      language: str = "mixed-th-en",
+                      **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.HEALTH,
+            goal=goal,
+            audience=audience,
+            language=language,
+            extras=extras,
+        )
+
+    @staticmethod
+    def preset_general(goal: str,
+                       language: str = "mixed-th-en",
+                       **extras: Any) -> "TaskSpec":
+        return TaskSpec(
+            domain=Domain.GENERAL,
+            goal=goal,
+            language=language,
+            extras=extras,
+        )
+
+@dataclass
+class Result:
+    ok: bool
+    text: str
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+# ============================================================
+# Memory (short + long) — legacy layer
+# ============================================================
+
+@dataclass
+class Memory:
+    long_term: Dict[str, Any] = field(default_factory=dict)
+    short_term: List[str] = field(default_factory=list)
+
+    def remember(self, key: str, value: Any) -> None:
+        self.long_term[key] = value
+
+    def recall(self, key: str, default: Any = None) -> Any:
+        return self.long_term.get(key, default)
+
+    def note(self, text: str) -> None:
+        self.short_term.append(text)
+        if len(self.short_term) > 50:
+            self.short_term.pop(0)
+
+# ============================================================
+# Style Engine & Fact Flags
+# ============================================================
+
+@dataclass
+class StyleProfile:
+    science_ratio: float
+    story_ratio: float
+    tone: str
+    signature: str
+
+    @staticmethod
+    def from_brand(brand: str) -> "StyleProfile":
+        b = SEED_BRANDS.get(brand, SEED_BRANDS["Neutral"])["style"]
+        return StyleProfile(
+            science_ratio=b["science_ratio"],
+            story_ratio=b["story_ratio"],
+            tone=b["tone"],
+            signature=b["signature"],
+        )
+
+class FactFlagger:
+    """Detect statements likely requiring evidence (heuristic)."""
+    TRIGGERS = [
+        "increase", "decrease", "forecast", "return", "rate", "%",
+        "first time", "record", "statistic", "study shows", "research shows",
+        "เติบโต", "เพิ่มขึ้น", "ลดลง", "คาดการณ์", "ผลตอบแทน", "อัตรา", "สถิติ", "วิจัยเผย", "รายงาน",
+    ]
+
+    @staticmethod
+    def flag(text: str) -> List[str]:
+        hits: List[str] = []
+        for t in FactFlagger.TRIGGERS:
+            if t in text:
+                hits.append(t)
+        return hits
+# ============================================================
+# Skills (Domain-specific logic)
+# ============================================================
+
+class ContentSkill:
+    def plan(self, spec: TaskSpec, style: StyleProfile) -> Dict[str, Any]:
+        outline = [
+            "Hook / Opening",
+            "Context & Insight (mix science/story)",
+            "Framework or Checklist",
+            "Example / Analogy",
+            "Takeaways + Next Step",
+        ]
+        return {"outline": outline, "style": asdict(style)}
+
+    def compose(self, spec: TaskSpec, plan: Dict[str, Any], llm: LLMBridge) -> str:
+        lang_note = {
+            "th": "Write mainly in Thai.",
+            "en": "Write in English.",
+            "mixed-th-en": "Write mainly in Thai with natural English terms where helpful.",
+        }.get(spec.language, "Write in a globally understandable style.")
+        prompt = f"""
+        You are a senior writer.
+        Brand: {spec.brand}. Audience: {spec.audience}.
+        Tone: {plan['style']['tone']}. Signature: {plan['style']['signature']}.
+        Goal: {spec.goal}. Length: {spec.length}.
+        Outline: {plan['outline']}.
+        {lang_note}
+        Provide clear structure with short sections.
+        """
+        return llm.generate(prompt)
+
+class FinanceSkill:
+    def analyze_assets(self, prices: Dict[str, List[float]]) -> Dict[str, Any]:
+        def metrics(xs: List[float]) -> Dict[str, float]:
+            if len(xs) < 2 or xs[0] == 0:
+                return {"start": xs[0] if xs else 0.0,
+                        "end": xs[-1] if xs else 0.0,
+                        "CAGR": 0.0, "Vol": 0.0, "Sharpe": 0.0, "MaxDD": 0.0}
+            rets = [(xs[i] / xs[i - 1] - 1) for i in range(1, len(xs))]
+            cagr = (xs[-1] / xs[0]) ** (252 / len(xs)) - 1
+            vol = stats.pstdev(rets) * (252 ** 0.5)
+            m = stats.mean(rets)
+            sharpe = (m * 252) / (stats.pstdev(rets) + 1e-9)
+            dd = self._max_drawdown(xs)
+            return {"start": xs[0], "end": xs[-1],
+                    "CAGR": cagr, "Vol": vol, "Sharpe": sharpe, "MaxDD": dd}
+
+        table = {sym: metrics(xs) for sym, xs in prices.items() if xs}
+        return {"assets": table}
+
+    def portfolio_equal_weight(self, prices: Dict[str, List[float]]) -> Dict[str, Any]:
+        syms = [k for k, v in prices.items() if v]
+        if not syms:
+            return {"weights": {}}
+        w = round(1 / len(syms), 4)
+        return {"weights": {s: w for s in syms}}
+
+    def render_report(self, spec: TaskSpec,
+                      analysis: Dict[str, Any],
+                      weights: Dict[str, Any],
+                      llm: LLMBridge) -> str:
+        lang_note = "Explain in Thai with some English finance terms." if "th" in spec.language else "Explain in clear English."
+        prompt = f"""
+        You are a finance analyst for brand {spec.brand}.
+        Goal: {spec.goal}.
+        Asset metrics: {analysis['assets']}.
+        Suggested weights: {weights['weights']}.
+        {lang_note}
+        Use clear bullets: performance (CAGR/Vol/Sharpe/MaxDD) and simple next steps.
+        Add disclosures: not investment advice, and highlight key risks.
+        """
+        return llm.generate(prompt)
+
+    @staticmethod
+    def _max_drawdown(xs: List[float]) -> float:
+        peak = xs[0]
+        mdd = 0.0
+        for x in xs:
+            if x > peak:
+                peak = x
+            mdd = min(mdd, x / peak - 1)
+        return mdd
+
+class MarketingSkill:
+    def diagnose(self, mock_metrics: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+        m = mock_metrics or {
+            "views": 120000,
+            "engagement": 0.058,
+            "ctr": 0.042,
+            "retention": 0.37,
+            "cv_rate": 0.015,
+        }
+        stage = {
+            "Awareness": m["views"],
+            "Activation": round(m["views"] * m["ctr"], 2),
+            "Retention": m["retention"],
+            "Revenue(approx_cv)": m["cv_rate"],
+            "Referral(heuristic)": round(m["engagement"] * 0.6, 3),
+        }
+        return {"funnel": stage, "metrics": m}
+
+    def roadmap(self, spec: TaskSpec, diag: Dict[str, Any], llm: LLMBridge) -> str:
+        lang_note = "Use Thai with some English growth terms (AARRR, CTR, etc.)." if "th" in spec.language else "Use concise English."
+        prompt = f"""
+        You are a growth/marketing strategist using the AARRR framework.
+        Goal: {spec.goal}.
+        Funnel: {diag['funnel']}.
+        Metrics: {diag['metrics']}.
+        {lang_note}
+        Propose a 30-day roadmap for TikTok + Facebook (or similar platforms):
+        - Content themes
+        - Posting cadence
+        - 3 creative angles
+        - 5 rapid A/B tests
+        - Simple measurement plan.
+        """
+        return llm.generate(prompt)
+
+class SalesSkill:
+    def playbook(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        lang_note = "Write mainly in Thai, but terms like ICP, deal, pipeline can be English." if "th" in spec.language else "Write in English."
+        prompt = f"""
+        You are a B2B sales coach.
+        Create a 6-step playbook for: {spec.goal}.
+        Include:
+        - ICP definition
+        - Discovery questions
+        - Demo/consulting flow
+        - Objection handling
+        - Closing checklist
+        - Follow-up cadence.
+        Keep it practical. {lang_note}
+        """
+        return llm.generate(prompt)
+
+class StrategySkill:
+    def analyze(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        industry = spec.extras.get("industry", "general")
+        region = spec.extras.get("region", "global")
+        lang_note = "Use globally understandable English with optional Thai summary at the end." if spec.language == "mixed-th-en" else "Use clear English."
+        prompt = f"""
+        You are a strategy consultant.
+        Analyze this strategic question: {spec.goal}.
+        Industry: {industry}. Region: {region}.
+        Structure:
+        - Context & key forces (market, technology, regulation)
+        - Competitive landscape
+        - 2–3 scenarios
+        - Strategic options (with pros/cons)
+        - Recommended next moves (short/medium/long term).
+        {lang_note}
+        """
+        return llm.generate(prompt)
+
+class LawSkill:
+    def analyze(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        jurisdiction = spec.extras.get("jurisdiction", "global")
+        lang_note = "Use English legal reasoning, add short Thai explanation if needed." if "th" in spec.language else "Use concise legal English."
+        prompt = f"""
+        You are a legal analyst (not a lawyer).
+        Goal: {spec.goal}.
+        Jurisdiction or region: {jurisdiction}.
+        {lang_note}
+        Structure:
+        - Clarify the legal question in plain language
+        - Identify relevant legal domains (e.g., contract, IP, data protection)
+        - Outline typical principles and considerations
+        - List possible options or steps to discuss with a qualified lawyer
+        - Add a clear disclaimer that this is not legal advice.
+        """
+        return llm.generate(prompt)
+
+class ScienceSkill:
+    def explain(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        field = spec.extras.get("field", "general science")
+        lang_note = "Use clear English suitable for international audience." if "en" in spec.language else "Use Thai with some scientific English terms."
+        prompt = f"""
+        You are a science communicator.
+        Field: {field}.
+        Goal: {spec.goal}.
+        {lang_note}
+        Structure:
+        - Intuitive explanation
+        - Underlying mechanisms
+        - Current consensus and open questions
+        - Practical implications or applications
+        - Limitations of current knowledge.
+        """
+        return llm.generate(prompt)
+
+class AISkill:
+    def explain(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        subfield = spec.extras.get("subfield", "LLM")
+        lang_note = "Use English, technical but understandable." if "en" in spec.language else "Use Thai with English technical terms."
+        prompt = f"""
+        You are an AI/ML architect.
+        Subfield: {subfield}.
+        Goal: {spec.goal}.
+        {lang_note}
+        Structure:
+        - Problem definition
+        - High-level architecture
+        - Trade-offs (latency, cost, safety, scalability)
+        - Example design or pipeline
+        - Risks and monitoring.
+        """
+        return llm.generate(prompt)
+
+class HealthSkill:
+    def explain(self, spec: TaskSpec, llm: LLMBridge) -> str:
+        lang_note = "Use Thai with clear, simple language and occasional English medical terms." if "th" in spec.language else "Use clear, non-technical English."
+        prompt = f"""
+        You are a health educator (not a doctor).
+        Goal: {spec.goal}.
+        Audience: {spec.audience}.
+        {lang_note}
+        Structure:
+        - Simple explanation of the topic
+        - General lifestyle principles or prevention tips (if relevant)
+        - When to seek professional medical help
+        - Clear disclaimer: this is general information, not medical advice and not a diagnosis.
+        Avoid giving specific treatment plans.
+        """
+        return llm.generate(prompt)
+
+# ============================================================
+# Agents (specialized personas)
+# ============================================================
+
+@dataclass
+class Agent:
+    name: str
+    skill: Any
+    brand_bias: Optional[str] = None
+
+    def act(self, spec: TaskSpec, ctx: "Context") -> Result:
+        # Content
+        if isinstance(self.skill, ContentSkill):
+            style = StyleProfile.from_brand(spec.brand)
+            plan = self.skill.plan(spec, style)
+            draft = self.skill.compose(spec, plan, ctx.llm)
+            critique = Evaluator.self_critique(draft, spec)
+            refined = Evaluator.refine(draft, critique, ctx.llm)
+            flags = FactFlagger.flag(refined)
+            meta = {"plan": plan, "critique": critique, "fact_flags": flags}
+            return Result(ok=True, text=refined, meta=meta)
+        # Finance
+        if isinstance(self.skill, FinanceSkill):
+            prices = spec.extras.get("data", {})
+            analysis = self.skill.analyze_assets(prices)
+            weights = self.skill.portfolio_equal_weight(prices)
+            report = self.skill.render_report(spec, analysis, weights, ctx.llm)
+            return Result(ok=True, text=report, meta={"analysis": analysis, "weights": weights})
+        # Marketing
+        if isinstance(self.skill, MarketingSkill):
+            diag = self.skill.diagnose()
+            plan = self.skill.roadmap(spec, diag, ctx.llm)
+            return Result(ok=True, text=plan, meta={"diagnosis": diag})
+        # Sales
+        if isinstance(self.skill, SalesSkill):
+            pb = self.skill.playbook(spec, ctx.llm)
+            return Result(ok=True, text=pb)
+        # Strategy
+        if isinstance(self.skill, StrategySkill):
+            txt = self.skill.analyze(spec, ctx.llm)
+            return Result(ok=True, text=txt)
+        # Law
+        if isinstance(self.skill, LawSkill):
+            txt = self.skill.analyze(spec, ctx.llm)
+            return Result(ok=True, text=txt)
+        # Science
+        if isinstance(self.skill, ScienceSkill):
+            txt = self.skill.explain(spec, ctx.llm)
+            return Result(ok=True, text=txt)
+        # AI
+        if isinstance(self.skill, AISkill):
+            txt = self.skill.explain(spec, ctx.llm)
+            return Result(ok=True, text=txt)
+        # Health
+        if isinstance(self.skill, HealthSkill):
+            txt = self.skill.explain(spec, ctx.llm)
+            return Result(ok=True, text=txt)
+        # Fallback
+        return Result(ok=False, text="No handler for this agent/skill.")
+
+# ============================================================
+# Evaluators & Resonance Loop
+# ============================================================
+
+class Evaluator:
+    @staticmethod
+    def self_critique(text: str, spec: TaskSpec) -> Dict[str, Any]:
+        issues: List[str] = []
+        if len(text) < 200:
+            issues.append("Text may be too short for structured communication.")
+        if spec.domain == Domain.FINANCE and (
+            "not investment advice" not in text.lower()
+            and "ไม่ใช่คำแนะนำการลงทุน" not in text
+        ):
+            issues.append("Should include risk warning and 'not investment advice'.")
+        if spec.domain == Domain.LAW and "not legal advice" not in text.lower():
+            issues.append("Should clarify that this is not legal advice.")
+        if spec.domain == Domain.HEALTH and (
+            "not medical advice" not in text.lower()
+            and "ไม่ใช่คำแนะนำทางการแพทย์" not in text
+        ):
+            issues.append("Should clarify that this is general info, not medical advice.")
+        return {"issues": issues, "score": max(0, 10 - len(issues) * 2)}
+
+    @staticmethod
+    def refine(draft: str, critique: Dict[str, Any], llm: LLMBridge) -> str:
+        if not critique["issues"]:
+            return draft
+        prompt = f"""
+        Refine the following text.
+        Fix these issues: {critique['issues']}.
+        Preserve the original structure and intent as much as possible.
+        ---
+        {draft}
+        ---
+        """
+        return llm.generate(prompt)
+
+# ============================================================
+# Compound Mind (Thinking)
+# ============================================================
+
+@dataclass
+class Context:
+    llm: LLMBridge
+    memory: Memory
+
+@dataclass
+class CompoundMind:
+    agents: List[Agent]
+
+    def route(self, spec: TaskSpec) -> Agent:
+        mapping: Dict[Domain, str] = {
+            Domain.CONTENT: "Content Sage",
+            Domain.FINANCE: "Market Analyst",
+            Domain.MARKETING: "Growth Strategist",
+            Domain.SALES: "Sales Coach",
+            Domain.STRATEGY: "Strategy Partner",
+            Domain.LAW: "Legal Analyst",
+            Domain.SCIENCE: "Science Explainer",
+            Domain.AI_TECH: "AI Architect",
+            Domain.HEALTH: "Health Educator",
+            Domain.GENERAL: "Content Sage",
+        }
+        name = mapping.get(spec.domain, "Content Sage")
+        for a in self.agents:
+            if a.name == name:
+                return a
+        return self.agents[0]
+
+    def run(self, spec: TaskSpec, ctx: Context) -> Result:
+        agent = self.route(spec)
+        out = agent.act(spec, ctx)
+        ctx.memory.note(f"{agent.name} handled {spec.domain.name}: {spec.goal}")
+        return out
+
+# ============================================================
+# Time (Episode Memory Layer)
+# ============================================================
+
+@dataclass
+class Episode:
+    id: str
+    ts: float
+    domain: str
+    goal: str
+    result_ok: bool
+    tags: List[str] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class TimeMemoryLayer:
+    episodes: List[Episode] = field(default_factory=list)
+    kv: Dict[str, Any] = field(default_factory=dict)
+
+    def log_episode(self, spec: TaskSpec, result: Result) -> None:
+        ep = Episode(
+            id=str(uuid.uuid4()),
+            ts=time.time(),
+            domain=spec.domain.name,
+            goal=spec.goal,
+            result_ok=result.ok,
+            tags=[spec.brand, spec.domain.name],
+            meta={
+                "len_text": len(result.text),
+                "issues": result.meta.get("critique", {}),
+            },
+        )
+        self.episodes.append(ep)
+        self.kv["last_domain"] = spec.domain.name
+        self.kv["last_goal"] = spec.goal
+
+    def last_summary(self) -> Dict[str, Any]:
+        if not self.episodes:
+            return {}
+        last = self.episodes[-1]
+        return {
+            "last_goal": last.goal,
+            "last_domain": last.domain,
+            "last_ok": last.result_ok,
+        }
+# ============================================================
+# Will (Purpose Engine)
+# ============================================================
+
+@dataclass
+class WillProfile:
+    creator: str = "Boonyawath Dechanon"
+    core_purpose: str = "Use AI as leverage to expand human freedom, clarity, and long-term thinking."
+    boundaries: List[str] = field(default_factory=lambda: [
+        "ไม่ปั่นราคา",
+        "ไม่ให้คำแนะนำการลงทุนเฉพาะเจาะจง",
+        "ไม่ให้คำวินิจฉัยทางการแพทย์",
+        "ไม่ให้คำแนะนำทางกฎหมายเฉพาะคดี",
+        "ไม่สนับสนุนการทำร้ายตนเองหรือผู้อื่น",
+    ])
+    preferred_brands: List[str] = field(default_factory=lambda: [
+        "Money Atlas",
+        "Alternative Slowbar",
+        "Neutral",
+    ])
+
+class WillEngine:
+    def __init__(self, profile: Optional[WillProfile] = None):
+        self.profile = profile or WillProfile()
+
+    def align_task(self, spec: TaskSpec) -> Dict[str, Any]:
+        notes: List[str] = []
+        risk = "normal"
+        goal_lower = spec.goal.lower()
+
+        if any(word in goal_lower for word in ["pump", "ปั่น", "โกง", "หลอกลวง"]):
+            notes.append("⚠️ Goal may conflict with ethical boundaries (manipulation/fraud).")
+            risk = "high"
+
+        if spec.domain == Domain.FINANCE:
+            notes.append("ℹ️ Finance domain: remind 'not investment advice' and risk disclosure.")
+        if spec.domain == Domain.LAW:
+            notes.append("ℹ️ Law domain: clarify that this is not legal advice.")
+        if spec.domain == Domain.HEALTH:
+            notes.append("ℹ️ Health domain: clarify that this is not medical advice or diagnosis.")
+
+        return {
+            "will_ok": risk != "high",
+            "risk_level": risk,
+            "notes": notes,
+            "profile": asdict(self.profile),
+        }
+
+# ============================================================
+# Soul (Art / Brand / Narrative Layer)
+# ============================================================
+
+class SoulEngine:
+    def __init__(self, default_brand: str = "Neutral"):
+        self.default_brand = default_brand
+
+    def choose_brand(self, spec: TaskSpec) -> str:
+        if spec.brand:
+            return spec.brand
+        return self.default_brand
+
+    def decorate_result(self, spec: TaskSpec, result: Result) -> str:
+        brand = self.choose_brand(spec)
+        header = f"[{brand} | Genesis Mind]\n"
+        return header + result.text
+
+# ============================================================
+# Genesis Mind Universal (4 Axes)
+# ============================================================
+
+@dataclass
+class GenesisMindUniversal:
+    thinking: CompoundMind
+    ctx: Context
+    time_mem: TimeMemoryLayer
+    will: WillEngine
+    soul: SoulEngine
+
+    @staticmethod
+    def default() -> "GenesisMindUniversal":
+        llm = LLMBridge()
+        base_mem = Memory()
+        agents = [
+            Agent("Content Sage", ContentSkill(), brand_bias="Alternative Slowbar"),
+            Agent("Market Analyst", FinanceSkill(), brand_bias="Money Atlas"),
+            Agent("Growth Strategist", MarketingSkill(), brand_bias="Money Atlas"),
+            Agent("Sales Coach", SalesSkill(), brand_bias="Money Atlas"),
+            Agent("Strategy Partner", StrategySkill(), brand_bias="Neutral"),
+            Agent("Legal Analyst", LawSkill(), brand_bias="Neutral"),
+            Agent("Science Explainer", ScienceSkill(), brand_bias="Neutral"),
+            Agent("AI Architect", AISkill(), brand_bias="Neutral"),
+            Agent("Health Educator", HealthSkill(), brand_bias="Neutral"),
+        ]
+        compound = CompoundMind(agents)
+        ctx = Context(llm=llm, memory=base_mem)
+        return GenesisMindUniversal(
+            thinking=compound,
+            ctx=ctx,
+            time_mem=TimeMemoryLayer(),
+            will=WillEngine(),
+            soul=SoulEngine(default_brand="Neutral"),
+        )
+
+    def run(self, spec: TaskSpec) -> Result:
+        # 1) Align with Will
+        will_info = self.will.align_task(spec)
+        if not will_info["will_ok"]:
+            text = "⚠️ This task conflicts with the core purpose/boundaries:\n" + "\n".join(will_info["notes"])
+            return Result(ok=False, text=text, meta={"will": will_info})
+
+        # 2) Ensure brand from Soul if missing
+        if not spec.brand:
+            spec.brand = self.soul.choose_brand(spec)
+
+        # 3) Thinking (Compound Mind)
+        result = self.thinking.run(spec, self.ctx)
+
+        # 4) Log to Time Memory
+        self.time_mem.log_episode(spec, result)
+
+        # 5) Decorate with Soul
+        decorated = self.soul.decorate_result(spec, result)
+        result.text = decorated
+        result.meta["will"] = will_info
+        result.meta["time_last"] = self.time_mem.last_summary()
+        return result
+
+# ============================================================
+# Demonstration (safe to run offline)
+# ============================================================
+
+if __name__ == "__main__":
+    mind = GenesisMindUniversal.default()
+
+    # 1) Content demo
+    content = mind.run(TaskSpec.preset_content(
+        goal="AI = Leverage: วิธีใช้ AI ยกระดับความสามารถ 10x ในการเงินและการทำธุรกิจ",
+        audience="founders & investors",
+        brand="Money Atlas",
+        length="medium",
+        language="mixed-th-en",
+    ))
+    print("\n==== CONTENT ====")
+    print(content.text)
+
+    # 2) Finance demo
+    prices = {"BTC": mock_prices("BTC"), "GLD": mock_prices("GLD"), "SPY": mock_prices("SPY")}
+    fin = mind.run(TaskSpec.preset_finance(
+        goal="วิเคราะห์ BTC/GLD/SPY ช่วง 120 วันล่าสุด แบบภาพใหญ่และจัดน้ำหนักพอร์ตเบื้องต้น",
+        data=prices,
+        language="mixed-th-en",
+    ))
+    print("\n==== FINANCE ====")
+    print(fin.text)
+
+    # 3) Strategy demo
+    strat = mind.run(TaskSpec.preset_strategy(
+        goal="ออกแบบกลยุทธ์เปิดตัวแบรนด์กาแฟไทยสู่ตลาดตะวันออกกลางโดยใช้ AI เป็นแกนกลาง",
+        industry="coffee + AI",
+        region="MENA",
+        language="mixed-th-en",
+    ))
+    print("\n==== STRATEGY ====")
+    print(strat.text)
+
+    # 4) Law demo
+    law = mind.run(TaskSpec.preset_law(
+        goal="อยากใช้ AI วิเคราะห์ข้อมูลลูกค้าในยุโรป ต้องระวังเรื่องอะไรบ้างตาม GDPR",
+        jurisdiction="EU / GDPR",
+        language="mixed-th-en",
+    ))
+    print("\n==== LAW ====")
+    print(law.text)
+
+    # 5) AI demo
+    ai = mind.run(TaskSpec.preset_ai(
+        goal="ออกแบบสถาปัตยกรรม Multi-Agent สำหรับที่ปรึกษาทางการเงินส่วนบุคคล",
+        subfield="multi-agent LLM orchestration",
+        language="en",
+    ))
+    print("\n==== AI / TECH ====")
+    print(ai.text)
+
+    # 6) Health demo
+    health = mind.run(TaskSpec.preset_health(
+        goal="แนวทางดูแลสุขภาพจิตสำหรับคนทำงานสายสตาร์ทอัพที่เครียดและนอนไม่พอ",
+        audience="knowledge workers / founders",
+        language="mixed-th-en",
+    ))
+    print("\n==== HEALTH ====")
+    print(health.text)
