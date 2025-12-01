@@ -1,0 +1,81 @@
+class FirstPrincipleEngine:
+    """
+    A computational model of First Principle Thinking.
+    Not a script.
+    A way of thinking compiled into a machine-readable system.
+    """
+
+    def __init__(self):
+        self.raw_facts = []
+        self.assumptions = []
+        self.core_truths = []
+        self.rebuild_blueprint = []
+        self.system_links = {}
+
+    # STEP 1: CAPTURE REALITY AS IT IS — NOT AS TOLD
+    def observe(self, input_data):
+        """Extract raw, uninterpreted facts."""
+        facts = [x for x in input_data if self._is_raw(x)]
+        self.raw_facts.extend(facts)
+        return facts
+
+    # STEP 2: ISOLATE HUMAN BIAS AND SOCIAL NOISE
+    def strip_assumptions(self):
+        """Identify assumptions that distort clarity."""
+        self.assumptions = [
+            f for f in self.raw_facts 
+            if self._looks_like_belief(f)
+        ]
+        self.raw_facts = [
+            f for f in self.raw_facts 
+            if f not in self.assumptions
+        ]
+        return self.assumptions
+
+    # STEP 3: DISTILL TO THE ATOMIC TRUTHS
+    def derive_core_truths(self):
+        """Reduce facts until only physics-level truths remain."""
+        self.core_truths = [self._reduce(f) for f in self.raw_facts]
+        return self.core_truths
+
+    # STEP 4: REBUILD THE WORLD FROM ZERO
+    def rebuild(self, objective):
+        """Construct a solution from basic truths, no inherited structure."""
+        self.rebuild_blueprint = [
+            self._generate_option(t, objective)
+            for t in self.core_truths
+        ]
+        return self.rebuild_blueprint
+
+    # STEP 5: SYSTEM THINKING — MAP THE CONSEQUENCES
+    def map_system(self):
+        """Simulate ripple effects of each decision in a dynamic system."""
+        system_map = {}
+        for element in self.rebuild_blueprint:
+            system_map[element] = self._predict_ripple(element)
+        self.system_links = system_map
+        return system_map
+
+    # STEP 6: SELECT THE MOVE WITH MAXIMUM STRATEGIC LEVERAGE
+    def decide(self):
+        """Choose the path with the highest expected leverage."""
+        return max(self.system_links, key=self.system_links.get)
+
+    # INTERNAL MECHANISMS ----------------------------------------------
+
+    def _is_raw(self, x):
+        return not isinstance(x, dict)  # unprocessed
+
+    def _looks_like_belief(self, x):
+        return isinstance(x, str) and ("คิดว่า" in x or "น่าจะ" in x)
+
+    def _reduce(self, fact):
+        # emulate physics-like reduction
+        return f"CORE({fact})"
+
+    def _generate_option(self, truth, goal):
+        return f"BUILD({truth}→{goal})"
+
+    def _predict_ripple(self, element):
+        # simulate multi-node systemic effects
+        return hash(element) % 1000  # abstract leverage score
