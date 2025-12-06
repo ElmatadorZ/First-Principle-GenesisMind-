@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Genesis Mind L3 — Deep Reasoning Orchestrator
+Author: Money Atlas / ElmatadorZ + Skynet (Genesis Mind)
+
+Concept:
+    - Model-agnostic reasoning kernel that can sit on top of GPT / Claude / Gemini / DeepSeek / local LLMs.
+    - Multi-vector reasoning:
+          math / system / causal / predictive
+    - Multi-agent reflection:
+          Mind / Shadow / Will / System
+    - Self-critique + meta-evaluation loop (DeepSeek++ style)
+    - Ready to deploy as:
+          • CLI tool
+          • FastAPI microservice
+
+Usage (CLI):
+    python genesis_mind_l3.py --question "Will AI destroy jobs or create new ones?" --model openai:gpt-4.1-mini
+
+Usage (API):
+    uvicorn genesis_mind_l3:app --reload --port 8000
+"""
+
+from __future__ import annotations
+import argparse
+import json
+import os
+from dataclasses import dataclass, asdict
+from datetime_timezone import datetime, timezone  # FIX: use `from datetime import datetime, timezone`
+from typing import Any, Dict, List, Optional, Protocol
+
+# ==============================
+# 1) Core Types & Utilities
+# ==============================
+
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+@dataclass
+class ReasoningPath:
+    """One line of reasoning in a specific "logic vector"."""
+    mode: str                # 'math', 'system', 'causal', 'predictive'
+    thoughts: str            # full chain-of-thought (hidden from end user ifต้องการ)
+    conclusion: str          # short human-facing conclusion
+    confidence: float        # 0.0 - 1.0 (self-reported by LLM)
+    meta: Dict[str, Any]
+
+@dataclass
+class EvaluationResult:
+    """Score & comments from one internal agent."""
+    agent: str               # 'mind', 'shadow', 'will', 'system'
+    score: float             # 0.0 - 1.0
+    comments: str
+    flags: List[str]
+
+@dataclass
+class FinalDecision:
+    answer: str
+    reasoning_summary: str
+    chosen_mode: str
+    confidence: float
+    evaluations: List[EvaluationResult]
+    raw_paths: List[ReasoningPath]
+    meta: Dict[str, Any]
+
+
+# ==============================
+# 2) LLM Client Interface
+# ==============================
+
+class LLMClient(Protocol):
+    """
+    Abstract client so you can plug any backend:
+        - OpenAI / Azure OpenAI
+        - Gemini
+        - DeepSeek
+        - Local LLM (llama.cpp / vllm / ollama)
+    Implement `complete()` and inject into GenesisMindL3.
+    """
+    model: str
+
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        ...
+
+
+class DummyEchoLLM:
+    """
+    Minimal fallback client — *not* for production.
+    It simply echoes the prompt tail as "reasoning".
+    Replace with a real implementation for deployment.
+    """
+    def __init__(self, model: str = "dummy-echo"):
+        self.model = model
+
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        tail = prompt[-400:]
+        return f"[dummy-model:{self.model}] Reasoning (truncated): {tail}\n\nConclusion: this is a placeholder response."
+
+
+# ==============================
+# 3) System Prompts (Genesis Style)
+# ==============================
+
+WILL_CORE = [
+    "Understand before you act.",
+    "Learn from constraints, not fantasies.",
+    "Do not copy—reflect and reframe.",
+    "Evolve with humility and precision.",
+    "Align with long-term systemic health.",
+]
+
+def build_reasoning_prompt(question: str, context: str, mode: str) -> str:
+    """
+    Create a mode-specific prompt that asks LLM to:
+        - think step-by-step
+        - self-estimate confidence
+        - provide a short conclusion
+        - tag important assumptions
+    """
+    base = f"""
+You are GENESIS-MIND-L3, a reasoning module for Money Atlas.
+
+Your job is to analyze the following question using the lens: [{mode}] logic.
+
+Question:
+{question}
+
+Additional context (may be empty):
+{context}
+
+INSTRUCTIONS:
+1. Think step-by-step in depth using strictly the [{mode}] perspective:
+   - math  -> numbers, formal structure, invariants
+   - system -> feedback loops, constraints, stocks/flows
+   - causal -> cause, effect, mechanisms
+   - predictive -> scenarios, timelines, probabilities
+2. Explicitly list key assumptions.
+3. Identify where you might be wrong or uncertain.
+4. At the end, output:
+   - "CONFIDENCE: x.xx" (0.00 - 1.00)
+   - "CONCLUSION: ..." (1-3 sentences, human friendly)
+
+Write reasoning first, then the CONFIDENCE and CONCLUSION lines.
+Keep the tone: calm, analytical, Money Atlas style.
+"""
+    return base.strip()
+
+
+def build_evaluator_prompt(path: ReasoningPath, agent: str) -> str:
+    """
+    Prompt for internal agents that critique a reasoning path.
+    agent:
+       - 'mind'   : checks coherence & clarity
+       - 'shadow' : attacks weaknesses, finds flaws
+       - 'will'   : checks alignment with WILL_CORE
+       - 'system' : checks systemic impact & blind spots
+    """
+    will_text = "\n".join(f"- {w}" for w in WILL_CORE)
+    return f"""
+You are the [{agent.upper()}] evaluator inside GENESIS-MIND-L3.
+
+You are given one reasoning path produced by another internal module.
+
+Reasoning MODE: {path.mode}
+Full reasoning:
+\"\"\"{path.thoughts}\"\"\"
+Conclusion:
+\"\"\"{path.conclusion}\"\"\"
+
+Core will (WILL_CORE) of Genesis Mind:
+{will_text}
+
+TASK:
+1. Analyze the reasoning and conclusion.
+2. Identify strengths and weaknesses (logic, assumptions, blind-spots).
+3. Check for hallucinations, overconfidence, or missing perspectives.
+4. If you are 'will', focus especially on alignment with WILL_CORE.
+5. If you are 'system', focus on long-term, second-order consequences.
+
+At the end, output strictly in this format:
+
+SCORE: x.xx   (0.00 - 1.00, where 1.00 = excellent, 0.00 = unacceptable)
+FLAGS: flag1; flag2; ...  (short keywords, can be empty)
+COMMENT:
+Your concise but deep critique here (3-6 sentences, Money Atlas tone).
+""".strip()
+
+
+# ==============================
+# 4) Parsing Helpers
+# ==============================
+
+def extract_confidence_and_conclusion(raw: str) -> (float, str):
+    conf = 0.5
+    concl = ""
+    for line in raw.splitlines()[::-1]:
+        ls = line.strip()
+        if ls.upper().startswith("CONFIDENCE"):
+            try:
+                num = "".join(ch for ch in ls if ch.isdigit() or ch == "." or ch == ",")
+                num = num.replace(",", ".")
+                conf = float(num)
+            except Exception:
+                conf = 0.5
+        if ls.upper().startswith("CONCLUSION"):
+            concl = ls.split(":", 1)[-1].strip()
+            break
+    if not concl:
+        concl = raw[-220:].strip()
+    conf = max(0.0, min(1.0, conf))
+    return conf, concl
+
+
+def parse_evaluator_output(raw: str) -> EvaluationResult:
+    score = 0.5
+    flags: List[str] = []
+    comment_lines: List[str] = []
+    lines = raw.splitlines()
+    agent = "unknown"
+    # Try detect SCORE + FLAGS + COMMENT sections
+    for line in lines:
+        ls = line.strip()
+        if ls.upper().startswith("SCORE"):
+            try:
+                num = "".join(ch for ch in ls if ch.isdigit() or ch == "." or ch == ",")
+                num = num.replace(",", ".")
+                score = float(num)
+            except Exception:
+                score = 0.5
+        elif ls.upper().startswith("FLAGS"):
+            parts = ls.split(":", 1)
+            if len(parts) == 2:
+                flags = [f.strip() for f in parts[1].split(";") if f.strip()]
+        elif ls.upper().startswith("COMMENT"):
+            # The rest is comment
+            # We include subsequent lines as part of comment
+            break
+
+    # Find index of COMMENT line and collect everything after
+    comment_started = False
+    for line in lines:
+        if not comment_started and line.strip().upper().startswith("COMMENT"):
+            comment_started = True
+            after = line.split("COMMENT", 1)[-1].replace(":", "", 1).strip()
+            if after:
+                comment_lines.append(after)
+            continue
+        if comment_started:
+            comment_lines.append(line)
+    comment = "\n".join(comment_lines).strip()
+    return EvaluationResult(agent=agent, score=max(0.0, min(1.0, score)), comments=comment, flags=flags)
+
+
+# ==============================
+# 5) Genesis Mind L3 Orchestrator
+# ==============================
+
+class GenesisMindL3:
+    """
+    High-level orchestrator:
+       1) Generate 3-4 reasoning paths (math/system/causal/predictive).
+       2) For each path, run 4 evaluators: mind / shadow / will / system.
+       3) Aggregate scores, choose best path.
+       4) Produce final answer + summary + meta.
+
+    This is model-agnostic. Plug any LLMClient that follows the protocol.
+    """
+
+    def __init__(self, llm: Optional[LLMClient] = None):
+        self.llm: LLMClient = llm or DummyEchoLLM()
+        self.modes = ["math", "system", "causal", "predictive"]
+        self.agents = ["mind", "shadow", "will", "system"]
+
+    # ---- Core LLM Calls ----
+
+    def _reason_once(self, question: str, context: str, mode: str) -> ReasoningPath:
+        prompt = build_reasoning_prompt(question, context, mode)
+        raw = self.llm.complete(prompt, max_tokens=1024)
+        conf, concl = extract_confidence_and_conclusion(raw)
+        return ReasoningPath(
+            mode=mode,
+            thoughts=raw,
+            conclusion=concl,
+            confidence=conf,
+            meta={"timestamp": utcnow_iso()}
+        )
+
+    def _evaluate_path(self, path: ReasoningPath) -> List[EvaluationResult]:
+        results: List[EvaluationResult] = []
+        for agent in self.agents:
+            eprompt = build_evaluator_prompt(path, agent)
+            raw = self.llm.complete(eprompt, max_tokens=768)
+            ev = parse_evaluator_output(raw)
+            ev.agent = agent
+            results.append(ev)
+        return results
+
+    # ---- Public API ----
+
+    def think(self, question: str, context: str = "") -> FinalDecision:
+        """
+        Main entry: ask Genesis Mind L3 to think.
+        Returns a FinalDecision object with:
+           - final answer
+           - best reasoning mode
+           - aggregated confidence
+           - evaluations
+           - raw reasoning paths
+        """
+        # 1) Generate reasoning paths
+        paths: List[ReasoningPath] = []
+        for mode in self.modes:
+            try:
+                rp = self._reason_once(question, context, mode)
+                paths.append(rp)
+            except Exception as e:
+                paths.append(
+                    ReasoningPath(
+                        mode=mode,
+                        thoughts=f"[ERROR while reasoning in mode={mode}: {e}]",
+                        conclusion="",
+                        confidence=0.0,
+                        meta={"error": str(e), "timestamp": utcnow_iso()}
+                    )
+                )
+
+        # 2) Evaluate each path with internal agents
+        all_evals: Dict[int, List[EvaluationResult]] = {}
+        for idx, path in enumerate(paths):
+            evals = self._evaluate_path(path)
+            all_evals[idx] = evals
+
+        # 3) Aggregate scores, choose best path
+        best_idx = 0
+        best_score = -1.0
+        for idx, path in enumerate(paths):
+            evals = all_evals[idx]
+            if not evals:
+                continue
+            avg_score = sum(ev.score for ev in evals) / len(evals)
+            # weight by path confidence
+            overall = 0.6 * avg_score + 0.4 * path.confidence
+            if overall > best_score:
+                best_score = overall
+                best_idx = idx
+
+        best_path = paths[best_idx]
+        best_evals = all_evals[best_idx]
+
+        # 4) Synthesize final answer using best path + meta
+        reasoning_summary = self._summarize_reasoning(best_path, best_evals, question, context)
+        answer = best_path.conclusion
+
+        final = FinalDecision(
+            answer=answer,
+            reasoning_summary=reasoning_summary,
+            chosen_mode=best_path.mode,
+            confidence=float(round(best_score, 3)),
+            evaluations=best_evals,
+            raw_paths=paths,
+            meta={"generated_at": utcnow_iso(), "model": getattr(self.llm, "model", "unknown")}
+        )
+        return final
+
+    def _summarize_reasoning(
+        self,
+        path: ReasoningPath,
+        evals: List[EvaluationResult],
+        question: str,
+        context: str
+    ) -> str:
+        """
+        Short human-facing summary of *why* this answer was chosen.
+        This can itself be LLM-generated, but here we keep it deterministic.
+        """
+        avg_score = sum(e.score for e in evals) / max(1, len(evals))
+        flags = set(f for e in evals for f in e.flags)
+        return (
+            f"Genesis Mind L3 answered the question using [{path.mode}] logic as the primary lens.\n"
+            f"Average internal score across agents (mind/shadow/will/system) ≈ {avg_score:.2f}.\n"
+            f"Model self-reported confidence for this path: {path.confidence:.2f}.\n"
+            f"Notable flags: {', '.join(flags) if flags else 'none'}.\n"
+            f"This answer balances logical soundness, alignment with WILL_CORE, and systemic impact "
+            f"in the spirit of Money Atlas and Genesis Mind."
+        )
+
+
+# ==============================
+# 6) FastAPI App (Optional Deploy)
+# ==============================
+
+try:
+    from fastapi import FastAPI
+    from pydantic import BaseModel
+
+    app = FastAPI(title="Genesis Mind L3 — Reasoning API", version="0.1.0")
+
+    class QueryPayload(BaseModel):
+        question: str
+        context: Optional[str] = ""
+
+    # For demo, we use DummyEchoLLM; replace with real LLMClient for production.
+    _gm = GenesisMindL3()
+
+    @app.post("/think")
+    def api_think(payload: QueryPayload):
+        decision = _gm.think(payload.question, payload.context or "")
+        return {
+            "answer": decision.answer,
+            "reasoning_summary": decision.reasoning_summary,
+            "chosen_mode": decision.chosen_mode,
+            "confidence": decision.confidence,
+            "evaluations": [asdict(ev) for ev in decision.evaluations],
+            "meta": decision.meta,
+        }
+
+except Exception:
+    # FastAPI not installed or environment not for API — ignore.
+    app = None
+
+
+# ==============================
+# 7) CLI Entry
+# ==============================
+
+def parse_cli() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Genesis Mind L3 — Money Atlas Reasoning Engine")
+    p.add_argument("--question", "-q", type=str, required=True, help="Question to ask Genesis Mind.")
+    p.add_argument("--context", "-c", type=str, default="", help="Optional extra context.")
+    p.add_argument("--model", "-m", type=str, default="dummy-echo", help="Model name (for your LLM client).")
+    return p.parse_args()
+
+
+def main_cli():
+    args = parse_cli()
+    # TODO: replace DummyEchoLLM with your real implementation.
+    llm = DummyEchoLLM(model=args.model)
+    gm = GenesisMindL3(llm=llm)
+    decision = gm.think(args.question, args.context)
+
+    print("=== Answer ===")
+    print(decision.answer)
+    print("\n=== Reasoning Summary ===")
+    print(decision.reasoning_summary)
+    print("\n=== Meta ===")
+    print(json.dumps({
+        "chosen_mode": decision.chosen_mode,
+        "confidence": decision.confidence,
+        "model": decision.meta.get("model", "unknown"),
+        "generated_at": decision.meta.get("generated_at")
+    }, indent=2))
+
+
+if __name__ == "__main__":
+    main_cli()
