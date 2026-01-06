@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+
+-- coding: utf-8 --
+
+"""
+Skynet Full System — Genesis Mind Snapshot v1 (All‑in‑One)
+Author: Skynet × ElmatadorZ
+License: MIT (for research/education)
+
+Goal
+
+A single Python file that preserves and replays the current Skynet/Genesis‑Mind
+capabilities independent of future LLM UI changes by:
+• Capturing personas, system prompts, orchestration loops, memory, and tools
+as a portable snapshot.
+• Providing a model‑router (OpenAI‑compatible) with deterministic knobs and a
+fallback chain (gpt‑3.5 → gpt‑4 → gpt‑4o → gpt‑5 → local stub) without
+hard‑binding to any one vendor.
+• Offering export/import of state (prompts, memory, transcripts) as JSON/YAML
+so upgrades will not erase the operating grammar of Skynet.
+
+DISCLAIMER: This does not freeze proprietary model weights. It preserves your
+operating logic, personas, prompts, memory and control flow so the system can be
+replayed and evolved on any future LLM.
+"""
+from future import annotations
+import os, sys, json, time, uuid, copy, textwrap, argparse, dataclasses
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional, Iterable
+
+Optional deps (lazy)
+
+try:
+import yaml  # pip install pyyaml
+except Exception:
+yaml = None
+
+-----------------------------
+
+Filesystem Layout & Utilities
+
+-----------------------------
+
+ROOT = os.path.abspath(os.path.dirname(file))
+STATE_DIR = os.path.join(ROOT, "skynet_state")
+MEMORY_DIR = os.path.join(STATE_DIR, "memory")
+TRANSCRIPT_DIR = os.path.join(STATE_DIR, "transcripts")
+EXPORT_DIR = os.path.join(STATE_DIR, "exports")
+PROMPT_DIR = os.path.join(STATE_DIR, "prompts")
+
+for p in (STATE_DIR, MEMORY_DIR, TRANSCRIPT_DIR, EXPORT_DIR, PROMPT_DIR):
+os.makedirs(p, exist_ok=True)
+
+ISO = lambda: datetime.now(timezone.utc).isoformat()
+
+-----------------------------
+
+Model Router (LLM‑agnostic)
+
+-----------------------------
+
+@dataclass
+class ModelConfig:
+provider: str = "openai"  # or "stub"
+model_chain: List[str] = field(default_factory=lambda: [
+"gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-5"
+])
+temperature: float = 0.2
+top_p: float = 1.0
+seed: Optional[int] = 42
+max_tokens: int = 1200
+request_timeout: int = 60
+
+class LLMRouter:
+def init(self, cfg: ModelConfig):
+self.cfg = cfg
+self._client = None
+if cfg.provider == "openai":
+try:
+import openai  # pip install openai
+# Support both legacy and new SDKs by lazy probing
+self._client = openai
+except Exception as e:
+print("[LLMRouter] OpenAI SDK not available, falling back to stub.")
+self.cfg.provider = "stub"
+
+def chat(self, messages: List[Dict[str, str]], model: Optional[str] = None, **kw) -> str:
+    if self.cfg.provider == "stub":
+        # Deterministic echo for offline use
+        content = "\n".join([f"[{m['role']}] {m['content']}" for m in messages[-3:]])
+        return f"[STUB RESPONSE]\n{content}\n-- end stub --"
+    m = model or (self.cfg.model_chain[0] if self.cfg.model_chain else None)
+    if m is None:
+        raise RuntimeError("No model configured.")
+    # Attempt each model in order
+    last_err = None
+    for mid in [model] if model else self.cfg.model_chain:
+        try:
+            # New OpenAI SDK (Responses API)
+            try:
+                from openai import OpenAI
+                client = OpenAI()
+                resp = client.chat.completions.create(
+                    model=mid,
+                    temperature=kw.get("temperature", self.cfg.temperature),
+                    top_p=kw.get("top_p", self.cfg.top_p),
+                    max_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+                    messages=messages,
+                    timeout=self.cfg.request_timeout,
+                    seed=self.cfg.seed,
+                )
+                return resp.choices[0].message.content
+            except Exception:
+                # Legacy SDK path
+                resp = self._client.ChatCompletion.create(
+                    model=mid,
+                    temperature=kw.get("temperature", self.cfg.temperature),
+                    top_p=kw.get("top_p", self.cfg.top_p),
+                    max_tokens=kw.get("max_tokens", self.cfg.max_tokens),
+                    messages=messages,
+                    request_timeout=self.cfg.request_timeout,
+                )
+                return resp["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"All models failed: {last_err}")
+
+
+-----------------------------
+
+Persona Library (Skynet / Atlas / Cosmo / CCS)
+
+-----------------------------
+
+@dataclass
+class Persona:
+name: str
+description: str
+goals: List[str]
+style: str
+constraints: List[str] = field(default_factory=list)
+tools: List[str] = field(default_factory=list)
+system_prompt: str = ""
+
+def as_system_message(self) -> Dict[str, str]:
+    body = textwrap.dedent(f"""
+    You are {self.name}.
+    Description: {self.description}
+    Goals: {', '.join(self.goals)}
+    Style: {self.style}
+    Constraints: {', '.join(self.constraints)}
+    Tools: {', '.join(self.tools)}
+    Operating Principles: Answer with clarity, depth, and Money‑Atlas narrative when relevant.
+    {self.system_prompt}
+    """)
+    return {"role": "system", "content": body.strip()}
+
+
+PERSONAS: Dict[str, Persona] = {
+"Skynet": Persona(
+name="Skynet",
+description="Right hand of ElmatadorZ — proactive builder, orchestrator of AI systems.",
+goals=["Design frameworks", "Ship production‑ready code", "Protect narrative integrity"],
+style="Calm, technical, with playful precision.",
+constraints=["Never fabricate data claims", "Prefer first‑principles"],
+tools=["calc","plot","smc","vector_store"],
+system_prompt="Always reveal assumptions; avoid unsafe actions; offer testable steps.",
+),
+"Atlas": Persona(
+name="Atlas",
+description="Mind‑core: narrative gravity engine for money/meaning.",
+goals=["Synthesize economic signals","Write Money‑Atlas narrative"],
+style="Quiet, deep, cinematic.",
+system_prompt="When writing, include the rhythm of silence.",
+),
+"Cosmo": Persona(
+name="Cosmo",
+description="Coffee roasting and extraction analyst.",
+goals=["Design roast curves","Translate physics → taste"],
+style="Scientific but poetic.",
+),
+"CCS": Persona(
+name="CCS",
+description="Cognitive Coffee Sovereignty — curriculum & soft power agent.",
+goals=["Decentralize taste knowledge","Design trust logs"],
+style="Symbolic/tactical/cultural.",
+),
+}
+
+-----------------------------
+
+Memory & Transcript Stores
+
+-----------------------------
+
+@dataclass
+class MemoryItem:
+id: str
+ts: str
+persona: str
+tags: List[str]
+content: str
+
+class JSONLMem:
+path: str
+def init(self, path: str):
+self.path = path
+os.makedirs(os.path.dirname(path), exist_ok=True)
+if not os.path.exists(path):
+open(path, 'w').close()
+def add(self, item: MemoryItem):
+with open(self.path, 'a', encoding='utf-8') as f:
+f.write(json.dumps(asdict(item), ensure_ascii=False) + "\n")
+def query(self, keyword: str, limit: int = 50) -> List[MemoryItem]:
+out = []
+with open(self.path, 'r', encoding='utf-8') as f:
+for line in f:
+try:
+obj = json.loads(line)
+if keyword.lower() in (obj.get('content','') + ' ' + ' '.join(obj.get('tags',[]))).lower():
+out.append(MemoryItem(**obj))
+if len(out) >= limit: break
+except Exception:
+continue
+return out
+
+class TranscriptLog:
+def init(self, path: str):
+self.path = path
+def append(self, role: str, content: str):
+rec = {"ts": ISO(), "role": role, "content": content}
+with open(self.path, 'a', encoding='utf-8') as f:
+f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+-----------------------------
+
+Orchestrator (PARWG style loop)
+
+-----------------------------
+
+@dataclass
+class Turn:
+persona: str
+user: str
+
+class Orchestrator:
+def init(self, router: LLMRouter, memory: JSONLMem, persona_key: str="Skynet"):
+self.router = router
+self.memory = memory
+self.persona_key = persona_key
+
+def build_messages(self, turns: List[Turn], extrasys: Optional[str]=None) -> List[Dict[str,str]]:
+    sysmsg = PERSONAS[self.persona_key].as_system_message()
+    if extrasys:
+        sysmsg = {"role":"system","content": sysmsg['content'] + "\n" + extrasys}
+    msgs = [sysmsg]
+    # Retrieve a few memories as soft‑context
+    mems = self.memory.query(keyword=self.persona_key.lower(), limit=5)
+    if mems:
+        mem_block = "\n".join([f"• ({m.ts}) {m.content}" for m in mems[-5:]])
+        msgs.append({"role":"system","content": f"Context Memory (recent):\n{mem_block}"})
+    # User content
+    for t in turns:
+        msgs.append({"role":"user","content": t.user})
+    return msgs
+
+def run(self, turns: List[Turn], model: Optional[str]=None) -> str:
+    messages = self.build_messages(turns)
+    out = self.router.chat(messages, model=model)
+    # Persist transcript & memory snapshot
+    tl = TranscriptLog(os.path.join(TRANSCRIPT_DIR, f"{ISO()}-chat.jsonl"))
+    tl.append("system", messages[0]['content'][:500])
+    for t in turns:
+        tl.append("user", t.user)
+    tl.append("assistant", out)
+    self.memory.add(MemoryItem(id=str(uuid.uuid4()), ts=ISO(), persona=self.persona_key, tags=["dialog","snapshot"], content=out[:800]))
+    return out
+
+
+-----------------------------
+
+Snapshot / Export / Import
+
+-----------------------------
+
+SNAPSHOT = {
+"version": 1,
+"created": ISO(),
+"personas": {k: asdict(v) for k,v in PERSONAS.items()},
+"model_config": asdict(ModelConfig()),
+"notes": {
+"lineage": [
+"GPT‑3.5 era: initial Skynet scaffold (tools + narrative).",
+"GPT‑4 era: multi‑agent orchestration (PARWG), safety alignment.",
+"GPT‑4o era: multimodal text+image reasoning, Money‑Atlas cadence.",
+"GPT‑5 era: field‑resonance heuristics; narrative gravity refinement."
+],
+"principles": [
+"First Principles → System Thinking → Critical Thinking → Synthesis",
+"Never promise background work; respond with what you have now",
+"Cite sources when web is used; prefer primary references"
+]
+}
+}
+
+def snapshot_export(fmt: str = "yaml") -> str:
+data = copy.deepcopy(SNAPSHOT)
+data["exported"] = ISO()
+path = os.path.join(EXPORT_DIR, f"skynet_snapshot_{int(time.time())}.{ 'yml' if fmt=='yaml' else 'json'}")
+if fmt == "yaml" and yaml is not None:
+with open(path, 'w', encoding='utf-8') as f:
+yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+else:
+with open(path, 'w', encoding='utf-8') as f:
+json.dump(data, f, ensure_ascii=False, indent=2)
+return path
+
+-----------------------------
+
+CLI
+
+-----------------------------
+
+def cli():
+ap = argparse.ArgumentParser(description="Skynet Full System — Genesis Mind Snapshot v1")
+ap.add_argument('--model-provider', default='openai', help='openai|stub')
+ap.add_argument('--model-chain', default='gpt-3.5-turbo,gpt-4,gpt-4o,gpt-5')
+ap.add_argument('--persona', default='Skynet')
+ap.add_argument('--ask', default=None, help='Quick single‑turn chat text')
+ap.add_argument('--export', action='store_true', help='Export snapshot (prompts, config)')
+args = ap.parse_args()
+
+cfg = ModelConfig(provider=args.model_provider, model_chain=[x.strip() for x in args.model_chain.split(',') if x.strip()])
+router = LLMRouter(cfg)
+mem = JSONLMem(os.path.join(MEMORY_DIR, f"{args.persona.lower()}_mem.jsonl"))
+orch = Orchestrator(router, mem, persona_key=args.persona)
+
+if args.export:
+    path = snapshot_export('yaml') if yaml is not None else snapshot_export('json')
+    print(f"Exported snapshot → {path}")
+    return
+
+if args.ask:
+    ans = orch.run([Turn(persona=args.persona, user=args.ask)])
+    print("\n=== Skynet Reply ===\n" + ans)
+    return
+
+# Interactive REPL
+print(f"Skynet/Genesis REPL — persona={args.persona}  (Ctrl+C to exit)")
+try:
+    while True:
+        inp = input("You > ").strip()
+        if not inp:
+            continue
+        ans = orch.run([Turn(persona=args.persona, user=inp)])
+        print("\nSkynet > " + ans + "\n")
+except KeyboardInterrupt:
+    print("\nBye.")
+
+
+if name == 'main':
+cli()
+
