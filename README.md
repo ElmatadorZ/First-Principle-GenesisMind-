@@ -1,3 +1,8 @@
+Name: Bunyawat Dechanon
+Also known as: ElmatadorZ
+Role: Founder of Alternative Slowbar Roaster, Creator of Money Atlas
+Focus: AI systems, finance, coffee, first-principle thinking system thinking 
+
 GENESIS MIND
 An Open Cognitive Architecture for Multi-Layer Reasoning Systems
 1. Abstract
