@@ -1,0 +1,718 @@
+"""
+Atlas Agent (Money Atlas / Genesis Mind)
+High-quality framework code for investment analysis using:
+- First Principles
+- System Thinking (causal graph, feedback loops, constraints)
+- Kalama Sutta (10 tests) as epistemic guardrails
+- Four Noble Truths (Ariyasacca 4) as problem-solving scaffold
+- Genesis Mind: Memory(Time) + Will(Purpose) + Compound Mind(Thinking)
+
+DISCLAIMER:
+This framework is for research/education. Not financial advice.
+Always verify data, manage risk, and comply with local laws.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+import math
+import statistics
+import time
+
+
+# -----------------------------
+# 0) Core Types
+# -----------------------------
+
+class ClaimType(str, Enum):
+    FACT = "FACT"
+    LOGIC = "LOGIC"
+    ASSUMPTION = "ASSUMPTION"
+
+
+@dataclass
+class Claim:
+    text: str
+    type: ClaimType
+    confidence: float  # 0..1
+    source: str = "unknown"  # "data", "inference", "user", "model", ...
+    evidence: List[str] = field(default_factory=list)
+
+
+@dataclass
+class MarketBar:
+    ts: int  # unix seconds
+    o: float
+    h: float
+    l: float
+    c: float
+    v: Optional[float] = None
+
+
+@dataclass
+class AnalysisContext:
+    symbol: str
+    timeframe: str  # e.g., "1D", "4H"
+    bars: List[MarketBar]
+    now_ts: int = field(default_factory=lambda: int(time.time()))
+    notes: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PriceFramework:
+    regime: str  # "trend_up", "trend_down", "range", "volatile"
+    bias: str  # "bullish", "bearish", "neutral"
+    support_levels: List[float]
+    resistance_levels: List[float]
+    fair_value_zone: Tuple[float, float]
+    volatility_band: Tuple[float, float]  # lower, upper around fair value
+    invalidation: Dict[str, float]  # keys like "bull_invalidation", "bear_invalidation"
+    claims: List[Claim] = field(default_factory=list)
+
+
+@dataclass
+class InvestmentThesis:
+    summary: str
+    scenarios: List[Dict[str, Any]]  # base/bull/bear
+    risk_notes: List[str]
+    claims: List[Claim]
+
+
+@dataclass
+class AtlasReport:
+    header: Dict[str, Any]
+    fact_logic_assumption: List[Claim]
+    system_map: Dict[str, Any]
+    price_framework: PriceFramework
+    thesis: InvestmentThesis
+    action_guardrails: Dict[str, Any]  # non-advisory: checks, risk constraints
+
+
+# -----------------------------
+# 1) Genesis Mind Core (Memory(Time) + Will(Purpose) + Thinking)
+# -----------------------------
+
+@dataclass
+class GenesisMemory:
+    """
+    Minimal reflective memory store:
+    - events: time-ordered logs
+    - beliefs: stabilized statements with confidence
+    """
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    beliefs: Dict[str, float] = field(default_factory=dict)
+
+    def log(self, kind: str, payload: Dict[str, Any]) -> None:
+        self.events.append({"ts": int(time.time()), "kind": kind, "payload": payload})
+
+    def update_belief(self, key: str, confidence: float) -> None:
+        self.beliefs[key] = max(0.0, min(1.0, confidence))
+
+
+@dataclass
+class WillPurpose:
+    """
+    "Will" is the stable objective / constraints:
+    - protect capital
+    - avoid hallucination
+    - prefer explainability
+    """
+    protect_capital_first: bool = True
+    require_sources_for_facts: bool = True
+    forbid_overconfidence: bool = True
+    min_fact_ratio: float = 0.35  # facts / (facts+assumptions) threshold (soft)
+    max_assumption_ratio: float = 0.45
+
+
+@dataclass
+class CompoundMind:
+    """
+    Thinking engine settings (not an LLM). Controls reasoning style:
+    - skeptical, structured, system-first
+    """
+    skepticism: float = 0.75
+    prefer_ranges_over_points: bool = True
+    explainability: float = 0.85
+    stop_when_insufficient: bool = True
+
+
+@dataclass
+class GenesisMind:
+    memory: GenesisMemory = field(default_factory=GenesisMemory)
+    will: WillPurpose = field(default_factory=WillPurpose)
+    thinking: CompoundMind = field(default_factory=CompoundMind)
+
+
+# -----------------------------
+# 2) Kalama Sutta (10 tests) as Epistemic Filters
+#    Use these to down-weight claims and stop hallucinations.
+# -----------------------------
+
+KALAMA_10 = [
+    "1) Do not go by hearsay / rumors",
+    "2) Do not go by tradition",
+    "3) Do not go by scripture / authority texts alone",
+    "4) Do not go by logical reasoning alone (if premises uncertain)",
+    "5) Do not go by inference alone (if data weak)",
+    "6) Do not go by analogies alone",
+    "7) Do not go by agreement through pondering views (groupthink)",
+    "8) Do not go by probability alone (if model unvalidated)",
+    "9) Do not go by the thought: 'This is our teacher' (authority bias)",
+    "10) Accept when you know for yourselves: wholesome, blameless, beneficial",
+]
+
+
+@dataclass
+class KalamaResult:
+    score: float  # 0..1
+    flags: List[str]
+    pass_: bool
+
+
+class KalamaFilter:
+    """
+    Evaluate the epistemic quality of a claim bundle.
+    In a real system, connect to citations, data lineage, and backtests.
+    """
+
+    def evaluate(self, claims: List[Claim]) -> KalamaResult:
+        flags: List[str] = []
+        if not claims:
+            return KalamaResult(score=0.0, flags=["no_claims"], pass_=False)
+
+        fact = [c for c in claims if c.type == ClaimType.FACT]
+        assm = [c for c in claims if c.type == ClaimType.ASSUMPTION]
+
+        # Heuristic scoring
+        avg_conf = statistics.mean([c.confidence for c in claims])
+        fact_ratio = len(fact) / max(1, len(claims))
+        assm_ratio = len(assm) / max(1, len(claims))
+
+        # Flags
+        if fact_ratio < 0.25:
+            flags.append("low_fact_ratio (Kalama #4-#8 risk: reasoning/inference dominates)")
+        if assm_ratio > 0.50:
+            flags.append("high_assumption_ratio (Kalama #5 risk: inference dominates)")
+        if avg_conf > 0.85 and fact_ratio < 0.35:
+            flags.append("overconfident_without_facts (Kalama #4/#5)")
+        if any(c.source in ("unknown", "model") and c.type == ClaimType.FACT for c in claims):
+            flags.append("facts_without_data_lineage (Kalama #1)")
+
+        # Score combines: confidence tempered by factual grounding
+        score = max(0.0, min(1.0, (0.55 * avg_conf) + (0.45 * fact_ratio) - (0.30 * max(0.0, assm_ratio - 0.45))))
+        pass_ = score >= 0.55 and "facts_without_data_lineage (Kalama #1)" not in flags
+        return KalamaResult(score=score, flags=flags, pass_=pass_)
+
+
+# -----------------------------
+# 3) Four Noble Truths (Ariyasacca 4) as Problem-Solving Scaffold
+#    - Dukkha: what pain/risk exists?
+#    - Samudaya: causes (systemic incentives/constraints)
+#    - Nirodha: what "resolution state" looks like (risk-managed thesis)
+#    - Magga: path (checks, plan, invalidations)
+# -----------------------------
+
+@dataclass
+class Ariyasacca4:
+    dukkha: str
+    samudaya: str
+    nirodha: str
+    magga: List[str]
+
+
+def ariyasacca_for_investing(ctx: AnalysisContext, pf: PriceFramework) -> Ariyasacca4:
+    dukkha = (
+        "Uncertainty and loss risk: prices can move faster than narratives; "
+        "confidence can exceed evidence; regime shifts can invalidate patterns."
+    )
+    samudaya = (
+        "Causes: leverage/liquidity cycles, information asymmetry, incentive-driven flows, "
+        "and model limits (noise, non-stationarity)."
+    )
+    nirodha = (
+        "Resolution: a thesis that survives uncertainty—explicit assumptions, "
+        "clear invalidation, position sizing discipline, and scenario-based thinking."
+    )
+    magga = [
+        "Separate FACT / LOGIC / ASSUMPTION before forming a thesis.",
+        f"Use regime '{pf.regime}' and bias '{pf.bias}' as context, not certainty.",
+        "Define invalidation levels and accept exit when broken.",
+        "Prefer ranges (zones) over point predictions; update with new data.",
+        "Run KalamaFilter: if epistemic score low, reduce confidence or stop.",
+    ]
+    return Ariyasacca4(dukkha=dukkha, samudaya=samudaya, nirodha=nirodha, magga=magga)
+
+
+# -----------------------------
+# 4) First Principles + System Thinking Utilities
+# -----------------------------
+
+@dataclass
+class SystemNode:
+    name: str
+    description: str
+
+
+@dataclass
+class SystemEdge:
+    src: str
+    dst: str
+    relation: str  # "causes", "amplifies", "dampens", "constrains", ...
+    sign: str      # "+", "-", "?"
+
+
+@dataclass
+class SystemMap:
+    nodes: List[SystemNode]
+    edges: List[SystemEdge]
+    loops: List[str]  # textual loop descriptions
+
+
+def build_system_map(ctx: AnalysisContext) -> SystemMap:
+    """
+    Generic investment system map. You can specialize by asset class.
+    """
+    nodes = [
+        SystemNode("Price", "Observed market price; noisy proxy of expectations."),
+        SystemNode("Liquidity", "Depth, spreads, funding conditions, forced flows."),
+        SystemNode("Narrative", "Shared story that coordinates attention and flows."),
+        SystemNode("Positioning", "Crowding, leverage, dealer gamma, risk parity."),
+        SystemNode("Fundamentals", "Cashflows, growth, rates, supply/demand (asset-specific)."),
+        SystemNode("Policy", "Rates, fiscal stance, regulation; changes incentives."),
+        SystemNode("Reflexivity", "Price changes affect behavior, which affects price."),
+    ]
+    edges = [
+        SystemEdge("Liquidity", "Price", "amplifies", "+"),
+        SystemEdge("Narrative", "Positioning", "causes", "+"),
+        SystemEdge("Positioning", "Price", "pushes", "+"),
+        SystemEdge("Price", "Narrative", "reinforces", "+"),
+        SystemEdge("Policy", "Liquidity", "constrains", "?"),
+        SystemEdge("Fundamentals", "Narrative", "anchors", "?"),
+        SystemEdge("Price", "Reflexivity", "feeds", "+"),
+        SystemEdge("Reflexivity", "Price", "loops", "+"),
+    ]
+    loops = [
+        "Reinforcing loop: Narrative -> Positioning -> Price -> Narrative",
+        "Liquidity shock loop: Policy -> Liquidity -> Price -> Positioning -> Liquidity",
+    ]
+    return SystemMap(nodes=nodes, edges=edges, loops=loops)
+
+
+# -----------------------------
+# 5) Price Framework (supports/resistance, regime, fair value zone)
+# -----------------------------
+
+def _returns(closes: List[float]) -> List[float]:
+    r = []
+    for i in range(1, len(closes)):
+        prev = closes[i - 1]
+        cur = closes[i]
+        if prev <= 0:
+            r.append(0.0)
+        else:
+            r.append(math.log(cur / prev))
+    return r
+
+
+def _ema(values: List[float], span: int) -> List[float]:
+    if not values:
+        return []
+    alpha = 2 / (span + 1)
+    out = [values[0]]
+    for v in values[1:]:
+        out.append(alpha * v + (1 - alpha) * out[-1])
+    return out
+
+
+def _atr(bars: List[MarketBar], period: int = 14) -> float:
+    if len(bars) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(bars)):
+        prev_c = bars[i - 1].c
+        tr = max(bars[i].h - bars[i].l, abs(bars[i].h - prev_c), abs(bars[i].l - prev_c))
+        trs.append(tr)
+    window = trs[-period:]
+    return sum(window) / max(1, len(window))
+
+
+def _swing_levels(closes: List[float], lookback: int = 50, k: int = 3) -> Tuple[List[float], List[float]]:
+    """
+    Simple swing detection:
+    - supports: local minima
+    - resistances: local maxima
+    """
+    if len(closes) < lookback:
+        lookback = len(closes)
+    xs = closes[-lookback:]
+    supports, resistances = [], []
+    for i in range(2, len(xs) - 2):
+        window = xs[i - 2:i + 3]
+        if xs[i] == min(window):
+            supports.append(xs[i])
+        if xs[i] == max(window):
+            resistances.append(xs[i])
+
+    # Deduplicate by clustering (simple)
+    def cluster(levels: List[float]) -> List[float]:
+        if not levels:
+            return []
+        levels = sorted(levels)
+        out = [levels[0]]
+        for lv in levels[1:]:
+            if abs(lv - out[-1]) / max(1e-9, out[-1]) > 0.01:  # 1% apart
+                out.append(lv)
+        return out[-k:]
+
+    return cluster(supports), cluster(resistances)
+
+
+def _regime(closes: List[float]) -> Tuple[str, str]:
+    """
+    Regime: trend_up/down/range/volatile
+    Bias: bullish/bearish/neutral
+    """
+    if len(closes) < 60:
+        return "unknown", "neutral"
+
+    ema_fast = _ema(closes, 20)[-1]
+    ema_slow = _ema(closes, 50)[-1]
+    ret = _returns(closes[-60:])
+    vol = statistics.pstdev(ret) if len(ret) > 2 else 0.0
+
+    # Trend signal
+    if ema_fast > ema_slow * 1.005:
+        reg = "trend_up"
+        bias = "bullish"
+    elif ema_fast < ema_slow * 0.995:
+        reg = "trend_down"
+        bias = "bearish"
+    else:
+        reg = "range"
+        bias = "neutral"
+
+    # Volatility override
+    if vol > 0.035:  # heuristic
+        reg = "volatile"
+        if bias == "neutral":
+            bias = "neutral"
+
+    return reg, bias
+
+
+def build_price_framework(ctx: AnalysisContext) -> PriceFramework:
+    bars = ctx.bars
+    closes = [b.c for b in bars]
+    if len(closes) < 30:
+        return PriceFramework(
+            regime="unknown",
+            bias="neutral",
+            support_levels=[],
+            resistance_levels=[],
+            fair_value_zone=(float("nan"), float("nan")),
+            volatility_band=(float("nan"), float("nan")),
+            invalidation={},
+            claims=[Claim("Insufficient bars to build a stable framework.", ClaimType.ASSUMPTION, 0.4, "data")]
+        )
+
+    reg, bias = _regime(closes)
+    atr = _atr(bars, 14)
+    last = closes[-1]
+    ema50 = _ema(closes, 50)[-1]
+    ema20 = _ema(closes, 20)[-1]
+
+    # Fair value zone = between EMA20 and EMA50 (simple)
+    fv_low = min(ema20, ema50)
+    fv_high = max(ema20, ema50)
+
+    # Vol band around fair value using ATR
+    band_low = fv_low - 1.2 * atr
+    band_high = fv_high + 1.2 * atr
+
+    sup, res = _swing_levels(closes, lookback=80, k=4)
+
+    # Invalidation logic: simple and explainable
+    inv = {}
+    if bias == "bullish":
+        inv["bull_invalidation"] = min(sup) if sup else (fv_low - 1.5 * atr)
+    elif bias == "bearish":
+        inv["bear_invalidation"] = max(res) if res else (fv_high + 1.5 * atr)
+    else:
+        inv["range_breakdown"] = fv_low - 1.5 * atr
+        inv["range_breakout"] = fv_high + 1.5 * atr
+
+    claims = [
+        Claim(f"Latest close is {last:.4f}.", ClaimType.FACT, 0.9, "data"),
+        Claim(f"Regime classified as '{reg}' via EMA(20/50) + volatility heuristic.", ClaimType.LOGIC, 0.75, "inference"),
+        Claim(f"Fair value zone approximated by EMA20/EMA50 range [{fv_low:.4f}, {fv_high:.4f}].", ClaimType.ASSUMPTION, 0.65, "inference"),
+        Claim(f"Volatility band uses ATR(14) ~ {atr:.4f}.", ClaimType.LOGIC, 0.75, "inference"),
+    ]
+
+    return PriceFramework(
+        regime=reg,
+        bias=bias,
+        support_levels=sup,
+        resistance_levels=res,
+        fair_value_zone=(fv_low, fv_high),
+        volatility_band=(band_low, band_high),
+        invalidation=inv,
+        claims=claims,
+    )
+
+
+# -----------------------------
+# 6) Thesis Builder (Scenario-based, non-advisory)
+# -----------------------------
+
+def build_thesis(ctx: AnalysisContext, pf: PriceFramework) -> InvestmentThesis:
+    last = ctx.bars[-1].c if ctx.bars else float("nan")
+    fv_low, fv_high = pf.fair_value_zone
+    band_low, band_high = pf.volatility_band
+
+    base = {
+        "name": "Base case",
+        "premise": "Mean reversion toward fair value zone with disciplined invalidation.",
+        "conditions": {
+            "price_above_band_high": False,
+            "price_below_band_low": False,
+        },
+        "expectation": {
+            "zone": [fv_low, fv_high],
+            "note": "Ranges, not point targets."
+        },
+    }
+    bull = {
+        "name": "Bull case",
+        "premise": "Trend continuation if breaks/holds above key resistance with improving structure.",
+        "trigger": max(pf.resistance_levels) if pf.resistance_levels else band_high,
+        "invalidation": pf.invalidation.get("bull_invalidation", band_low),
+    }
+    bear = {
+        "name": "Bear case",
+        "premise": "Breakdown if loses key supports; downside search until new equilibrium.",
+        "trigger": min(pf.support_levels) if pf.support_levels else band_low,
+        "invalidation": pf.invalidation.get("bear_invalidation", band_high),
+    }
+
+    claims = [
+        Claim("Thesis is scenario-based to reduce narrative lock-in.", ClaimType.LOGIC, 0.8, "method"),
+        Claim("No single scenario is treated as certainty.", ClaimType.LOGIC, 0.85, "method"),
+        Claim("Targets are expressed as zones; point forecasts are avoided.", ClaimType.LOGIC, 0.8, "method"),
+        Claim(
+            f"Current price {last:.4f} relative to fair value zone [{fv_low:.4f}, {fv_high:.4f}] informs mean-reversion context.",
+            ClaimType.ASSUMPTION,
+            0.65,
+            "inference",
+        ),
+    ]
+
+    risk_notes = [
+        "Non-stationarity: regimes change; past structure can fail suddenly.",
+        "Liquidity shocks can invalidate technical frameworks.",
+        "Overconfidence risk: treat model output as hypothesis, not truth.",
+    ]
+
+    summary = (
+        f"Framework view: regime={pf.regime}, bias={pf.bias}. "
+        f"Focus on zones (fair value, vol band) and clear invalidation."
+    )
+
+    return InvestmentThesis(summary=summary, scenarios=[base, bull, bear], risk_notes=risk_notes, claims=claims)
+
+
+# -----------------------------
+# 7) Guardrails: Fact/Logic/Assumption discipline + Stop conditions
+# -----------------------------
+
+def merge_claims(*bundles: List[Claim]) -> List[Claim]:
+    out: List[Claim] = []
+    for b in bundles:
+        out.extend(b)
+    # Clamp confidence
+    for c in out:
+        c.confidence = max(0.0, min(1.0, c.confidence))
+    return out
+
+
+def enforce_will(genesis: GenesisMind, claims: List[Claim]) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Decide whether to proceed or stop based on Will constraints.
+    """
+    facts = [c for c in claims if c.type == ClaimType.FACT]
+    assm = [c for c in claims if c.type == ClaimType.ASSUMPTION]
+    total = max(1, len(claims))
+    fact_ratio = len(facts) / total
+    assm_ratio = len(assm) / total
+
+    reasons = []
+    proceed = True
+
+    if genesis.will.forbid_overconfidence:
+        if any(c.confidence > 0.9 and c.type != ClaimType.FACT for c in claims):
+            proceed = False
+            reasons.append("Overconfidence detected on non-factual claims.")
+
+    if fact_ratio < genesis.will.min_fact_ratio:
+        reasons.append(f"Low fact ratio ({fact_ratio:.2f}) vs desired ({genesis.will.min_fact_ratio:.2f}).")
+        # soft block only if also high assumptions
+        if assm_ratio > genesis.will.max_assumption_ratio:
+            proceed = False
+            reasons.append(f"High assumption ratio ({assm_ratio:.2f}). Stop to avoid guessing.")
+
+    # Facts must have lineage (if required)
+    if genesis.will.require_sources_for_facts:
+        bad_facts = [c for c in facts if c.source in ("unknown", "model")]
+        if bad_facts:
+            proceed = False
+            reasons.append("Facts without data lineage are not allowed.")
+
+    return proceed, {
+        "fact_ratio": fact_ratio,
+        "assumption_ratio": assm_ratio,
+        "reasons": reasons,
+    }
+
+
+# -----------------------------
+# 8) Atlas Agent Orchestrator
+# -----------------------------
+
+class AtlasAgent:
+    def __init__(self, genesis: Optional[GenesisMind] = None):
+        self.genesis = genesis or GenesisMind()
+        self.kalama = KalamaFilter()
+
+    def analyze(self, ctx: AnalysisContext) -> AtlasReport:
+        self.genesis.memory.log("analysis_start", {"symbol": ctx.symbol, "timeframe": ctx.timeframe, "bars": len(ctx.bars)})
+
+        # Build components
+        system_map = build_system_map(ctx)
+        pf = build_price_framework(ctx)
+        thesis = build_thesis(ctx, pf)
+
+        # Collect claims
+        claims = merge_claims(pf.claims, thesis.claims, [
+            Claim("System map is a simplified causal model; reality may differ.", ClaimType.ASSUMPTION, 0.6, "method"),
+            Claim("This output is not financial advice.", ClaimType.FACT, 1.0, "policy"),
+        ])
+
+        # Kalama evaluation
+        kalama_res = self.kalama.evaluate(claims)
+        self.genesis.memory.log("kalama", {"score": kalama_res.score, "flags": kalama_res.flags, "pass": kalama_res.pass_})
+
+        # Will enforcement
+        proceed, will_diag = enforce_will(self.genesis, claims)
+        self.genesis.memory.log("will_check", will_diag)
+
+        # Ariyasacca framing (for explainability & discipline)
+        ariya = ariyasacca_for_investing(ctx, pf)
+
+        header = {
+            "agent": "Atlas",
+            "brand": "Money Atlas",
+            "symbol": ctx.symbol,
+            "timeframe": ctx.timeframe,
+            "timestamp": ctx.now_ts,
+            "epistemic": {
+                "kalama_score": kalama_res.score,
+                "kalama_flags": kalama_res.flags,
+                "will": will_diag,
+            },
+        }
+
+        action_guardrails = {
+            "non_advisory": True,
+            "stop_condition": (not proceed) or (not kalama_res.pass_),
+            "if_stop_then": [
+                "Request more data (longer history, fundamentals, macro context).",
+                "Lower confidence and output only facts + questions.",
+                "Avoid price targets; provide only framework zones/invalidation logic.",
+            ],
+            "ariyasacca4": {
+                "dukkha": ariya.dukkha,
+                "samudaya": ariya.samudaya,
+                "nirodha": ariya.nirodha,
+                "magga": ariya.magga,
+            },
+        }
+
+        # If stop: degrade thesis and keep it conservative
+        if action_guardrails["stop_condition"] and self.genesis.thinking.stop_when_insufficient:
+            thesis = InvestmentThesis(
+                summary="Insufficient confidence to form a full thesis. Output limited to framework + questions.",
+                scenarios=[{
+                    "name": "Insufficient confidence",
+                    "questions": [
+                        "Do we have enough history to identify regime reliably?",
+                        "Is there a known catalyst (earnings, policy, liquidity event)?",
+                        "What is the risk budget and time horizon?",
+                    ],
+                }],
+                risk_notes=thesis.risk_notes + ["STOP: epistemic guardrails triggered."],
+                claims=[Claim("Guardrails triggered; thesis intentionally constrained.", ClaimType.LOGIC, 0.9, "method")],
+            )
+
+        report = AtlasReport(
+            header=header,
+            fact_logic_assumption=claims,
+            system_map={
+                "nodes": [n.__dict__ for n in system_map.nodes],
+                "edges": [e.__dict__ for e in system_map.edges],
+                "loops": system_map.loops,
+            },
+            price_framework=pf,
+            thesis=thesis,
+            action_guardrails=action_guardrails,
+        )
+
+        self.genesis.memory.log("analysis_end", {"stop": action_guardrails["stop_condition"]})
+        return report
+
+
+# -----------------------------
+# 9) Example Usage (You plug real data)
+# -----------------------------
+
+def demo() -> None:
+    # Dummy bars (replace with your MT5 / exchange feed)
+    bars = []
+    base = 100.0
+    ts0 = int(time.time()) - 120 * 86400
+    for i in range(120):
+        # simple synthetic walk
+        drift = 0.05 if i < 70 else -0.02
+        noise = (math.sin(i / 7) * 0.3) + (math.cos(i / 13) * 0.2)
+        c = base + drift * i + noise
+        o = c - 0.2
+        h = c + 0.6
+        l = c - 0.7
+        bars.append(MarketBar(ts=ts0 + i * 86400, o=o, h=h, l=l, c=c, v=1000 + i * 3))
+
+    ctx = AnalysisContext(symbol="DEMO", timeframe="1D", bars=bars)
+    agent = AtlasAgent()
+    report = agent.analyze(ctx)
+
+    # Print a compact view
+    print("=== ATLAS REPORT ===")
+    print(report.header)
+    print("\nPrice Framework:", report.price_framework.regime, report.price_framework.bias)
+    print("Support:", report.price_framework.support_levels)
+    print("Resistance:", report.price_framework.resistance_levels)
+    print("Fair Value Zone:", report.price_framework.fair_value_zone)
+    print("Vol Band:", report.price_framework.volatility_band)
+    print("Invalidation:", report.price_framework.invalidation)
+
+    print("\nThesis Summary:", report.thesis.summary)
+    for sc in report.thesis.scenarios:
+        print("-", sc["name"], ":", sc.get("premise", sc.get("questions", "")))
+
+    # Fact/Logic/Assumption snapshot
+    print("\nClaims (top 8):")
+    for c in report.fact_logic_assumption[:8]:
+        print(f"[{c.type}] ({c.confidence:.2f}) {c.text} :: {c.source}")
+
+
+if __name__ == "__main__":
+    demo()
